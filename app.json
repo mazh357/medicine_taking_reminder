@@ -1,0 +1,66 @@
+{
+  "expo": {
+    "name": "长期用药助手",
+    "slug": "medication-adherence-demo",
+    "version": "0.1.0",
+    "platforms": [
+      "android"
+    ],
+    "orientation": "portrait",
+    "scheme": "medicationdemo",
+    "userInterfaceStyle": "automatic",
+    "updates": {
+      "enabled": false,
+      "checkAutomatically": "NEVER"
+    },
+    "android": {
+      "package": "com.helpusurvive.medicationdemo",
+      "versionCode": 1,
+      "allowBackup": false,
+      "predictiveBackGestureEnabled": false
+    },
+    "plugins": [
+      "expo-router",
+      "expo-dev-client",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "允许长期用药助手拍摄并在本机加密保存照片。",
+          "recordAudioAndroid": false,
+          "barcodeScannerEnabled": false
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "defaultChannel": "medication-reminders-v2"
+        }
+      ],
+      [
+        "expo-sqlite",
+        {
+          "enableFTS": false,
+          "useSQLCipher": true,
+          "withSQLiteVecExtension": false
+        }
+      ],
+      [
+        "expo-secure-store",
+        {
+          "configureAndroidBackup": false
+        }
+      ],
+      "./plugins/withAndroidDataProtection.cjs"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "personalLocalMode": true,
+      "encryptionRequired": true,
+      "realPatientDataAllowed": false,
+      "storageSchemaVersion": 4,
+      "mediaFormatVersion": 1
+    }
+  }
+}
