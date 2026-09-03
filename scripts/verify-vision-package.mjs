@@ -1,0 +1,20 @@
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { resolve } from 'node:path';
+
+const root = resolve(import.meta.dirname, '..');
+const json = (file) => JSON.parse(readFileSync(resolve(root, file), 'utf8'));
+const lock = json('package-lock.json');
+const spec = json('package.json').dependencies['medication-vision-module'];
+if (spec !== 'file:vendor/medication-vision-module-0.2.0.tgz') throw new Error('Visual module must be a pinned repository-local package');
+const bytes = readFileSync(resolve(root, spec.slice(5)));
+const integrity = `sha512-${createHash('sha512').update(bytes).digest('base64')}`;
+if (lock.packages['node_modules/medication-vision-module'].integrity !== integrity) throw new Error('Local package differs from lockfile');
+const base = 'node_modules/medication-vision-module/android/src/main/assets/';
+const manifest = json(`${base}medication_vision/model-manifest.json`);
+if (manifest.approvedForClosedSetUse !== false || manifest.thresholdsApproved !== false) throw new Error('Visual thresholds must remain unapproved in this release');
+if (!manifest.distributionApproved || manifest.license !== 'Apache-2.0') throw new Error('Model distribution evidence missing');
+if (manifest.modelAsset !== 'medication_vision/mobilenet_v3_small.tflite') throw new Error('Unexpected model asset');
+const model = readFileSync(resolve(root, base, manifest.modelAsset));
+if (createHash('sha256').update(model).digest('hex') !== manifest.sha256) throw new Error('Installed model hash mismatch');
+console.log('Visual package, lockfile and model hash verified; appearance gate remains closed.');

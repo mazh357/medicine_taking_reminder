@@ -34,6 +34,8 @@ export interface PersonalMedication {
   displayName: string;
   quantityUnit: QuantityUnit;
   status: 'active' | 'inactive';
+  /** Null is reserved for pre-v6 rows whose current status has always applied. */
+  statusEffectiveLocalDate?: LocalDate | null;
   createdAtUtc: UtcInstant;
   updatedAtUtc: UtcInstant;
   rowVersion: number;
@@ -74,6 +76,8 @@ export interface PersonalRegimen {
   rowVersion: number;
   createdAtUtc: UtcInstant;
   updatedAtUtc: UtcInstant;
+  /** Append-only retirement fact; null means the schedule has not been retired. */
+  retirementEffectiveLocalDate?: LocalDate | null;
 }
 
 export interface PersonalDoseOccurrenceItem {
@@ -107,6 +111,13 @@ export interface PersonalDoseOccurrence {
 }
 
 export type RegimenRevisionType = 'created' | 'modified' | 'paused' | 'resumed';
+
+export interface RegimenRetirementFact {
+  regimenId: EntityId;
+  effectiveLocalDate: LocalDate;
+  recordedAtUtc: UtcInstant;
+  commandId: EntityId;
+}
 
 export interface RegimenRevisionEvent {
   id: EntityId;
@@ -238,6 +249,17 @@ export interface PlanChangeResult {
   effective: 'today' | 'tomorrow';
   replacedOccurrenceId?: EntityId;
   newOccurrenceId?: EntityId;
+  notificationRebuildRequired: boolean;
+}
+
+export interface MedicationActivationResult {
+  medicationId: EntityId;
+  status: PersonalMedication['status'];
+  effectiveLocalDate: LocalDate;
+  effective: 'today' | 'tomorrow';
+  affectedRegimenIds: EntityId[];
+  replacedOccurrenceIds: EntityId[];
+  newOccurrenceIds: EntityId[];
   notificationRebuildRequired: boolean;
 }
 

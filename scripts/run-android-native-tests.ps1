@@ -1,7 +1,10 @@
 [CmdletBinding()]
 param(
     [ValidateSet("x86_64", "arm64-v8a")]
-    [string]$Architecture = "x86_64"
+    [string]$Architecture = "x86_64",
+    [switch]$PreserveProjectCache,
+    [switch]$SkipInstrumentation,
+    [switch]$SkipPluginOutputReset
 )
 
 $ErrorActionPreference = "Stop"
@@ -30,7 +33,11 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "Gradle daemon stop failed with exit code $LASTEXITCODE"
     }
-    Reset-IncludedGradlePluginOutputs -ProjectRoot $projectRoot
+    if ($SkipPluginOutputReset) {
+        Assert-IncludedGradlePluginJars -ProjectRoot $projectRoot
+    } else {
+        Reset-IncludedGradlePluginOutputs -ProjectRoot $projectRoot
+    }
     $gradleArgs = @(
         "-Dorg.gradle.parallel=false",
         "--no-daemon",
@@ -40,9 +47,11 @@ try {
         "--project-cache-dir", $projectCache,
         ":local-data-crypto:testDebugUnitTest",
         ":demo-pill-counter:testDebugUnitTest",
-        ":local-data-crypto:connectedDebugAndroidTest",
         "-PreactNativeArchitectures=$Architecture"
     )
+    if (-not $SkipInstrumentation) {
+        $gradleArgs += ":local-data-crypto:connectedDebugAndroidTest"
+    }
     $previousPreference = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
@@ -53,11 +62,17 @@ try {
     }
 } finally {
     Pop-Location
-    Remove-VerifiedDirectory -Path $projectCache -AllowedRoot $projectCacheRoot
+    if (-not $PreserveProjectCache) {
+        Remove-VerifiedDirectory -Path $projectCache -AllowedRoot $projectCacheRoot
+    }
 }
 
 if ($exitCode -ne 0) {
     throw "Android native tests failed with exit code $exitCode"
 }
 Assert-IncludedGradlePluginJars -ProjectRoot $projectRoot
-Write-Host "Android native and instrumentation tests passed." -ForegroundColor Green
+if ($SkipInstrumentation) {
+    Write-Host "Android native unit tests passed; instrumentation tests were skipped." -ForegroundColor Green
+} else {
+    Write-Host "Android native unit and instrumentation tests passed." -ForegroundColor Green
+}

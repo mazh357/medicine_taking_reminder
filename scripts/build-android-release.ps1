@@ -1,7 +1,10 @@
 [CmdletBinding()]
 param(
     [ValidateSet("x86_64", "arm64-v8a")]
-    [string]$Architecture = "x86_64"
+    [string]$Architecture = "x86_64",
+    [switch]$Minify,
+    [switch]$PreserveCachesAndEvidence,
+    [switch]$SkipPluginOutputReset
 )
 
 $ErrorActionPreference = "Stop"
@@ -135,7 +138,11 @@ try {
     Pop-Location
 }
 
-Reset-IncludedGradlePluginOutputs -ProjectRoot $projectRoot
+if ($SkipPluginOutputReset) {
+    Assert-IncludedGradlePluginJars -ProjectRoot $projectRoot
+} else {
+    Reset-IncludedGradlePluginOutputs -ProjectRoot $projectRoot
+}
 
 $buildStartedAt = Get-Date
 $buildExitCode = -1
@@ -150,6 +157,7 @@ $gradleArgs = @(
     ":app:assembleRelease",
     "-PreactNativeArchitectures=$Architecture"
 )
+if ($Minify) { $gradleArgs += "-Pandroid.enableMinifyInReleaseBuilds=true" }
 
 Push-Location $androidRoot
 try {
@@ -166,7 +174,9 @@ try {
     }
 } finally {
     Pop-Location
-    Remove-VerifiedDirectory -Path $projectCache -AllowedRoot $projectCacheRoot
+    if (-not $PreserveCachesAndEvidence) {
+        Remove-VerifiedDirectory -Path $projectCache -AllowedRoot $projectCacheRoot
+    }
 }
 
 if ($buildExitCode -ne 0) {
@@ -182,7 +192,9 @@ if ($buildExitCode -ne 0) {
         "buildLog=$buildLog",
         "previousApkHash=$previousApkHash"
     ) | Set-Content -LiteralPath $resultFile -Encoding UTF8
-    Prune-ReleaseEvidence -CurrentEvidence $evidenceRoot
+    if (-not $PreserveCachesAndEvidence) {
+        Prune-ReleaseEvidence -CurrentEvidence $evidenceRoot
+    }
     throw "Release build failed. Evidence: $resultFile"
 }
 
@@ -243,7 +255,9 @@ if ($artifactHash -ne $apkHash) {
     "previousArchitectureArtifactHash=$previousArchitectureArtifactHash"
 ) | Set-Content -LiteralPath $resultFile -Encoding UTF8
 
-Prune-ReleaseEvidence -CurrentEvidence $evidenceRoot
+if (-not $PreserveCachesAndEvidence) {
+    Prune-ReleaseEvidence -CurrentEvidence $evidenceRoot
+}
 
 Write-Host "Verified Release build generated:" -ForegroundColor Green
 Get-Content -LiteralPath $resultFile | Out-Host

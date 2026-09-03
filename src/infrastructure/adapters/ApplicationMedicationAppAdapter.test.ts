@@ -64,6 +64,7 @@ function adapterFixture(input: {
     listAllOccurrences: vi.fn().mockResolvedValue([]),
     listAllInventoryLedger: vi.fn().mockResolvedValue([]),
     listRegimensForDate: vi.fn().mockResolvedValue([]),
+    listRegimensForMedication: vi.fn().mockResolvedValue([]),
     listAllFollowUpItems: vi.fn().mockResolvedValue([]),
     listAllAuxiliaryReminderIntents: vi.fn().mockResolvedValue([]),
   };
@@ -105,6 +106,7 @@ function reconciliationFixture(input: {
   auxiliaryProjections?: Map<string, Record<string, unknown>>;
   application?: Record<string, unknown>;
   reminders?: Record<string, unknown>;
+  repository?: Record<string, unknown>;
 } = {}) {
   const occurrences = input.occurrences ?? [];
   const medications = input.medications ?? [];
@@ -128,6 +130,13 @@ function reconciliationFixture(input: {
     listMedications: vi.fn(async () => medications),
     listAllInventoryLedger: vi.fn(async () => ledger),
     listRegimensForDate: vi.fn(async () => regimens),
+    listRegimensForMedication: vi.fn(async (medicationId: string) =>
+      regimens.filter((regimen) => {
+        const version = versions.find((candidate) => candidate.id === regimen.currentVersionId);
+        return Array.isArray(version?.items) && version.items.some(
+          (item: Record<string, unknown>) => item.medicationId === medicationId,
+        );
+      })),
     getRegimenVersion: vi.fn(async (id: string) =>
       versions.find((version) => version.id === id) ?? null),
     getHistory: vi.fn(async (id: string) => histories.get(id) ?? null),
@@ -145,6 +154,7 @@ function reconciliationFixture(input: {
     getAuxiliaryReminderProjection: vi.fn(async (id: string) =>
       auxiliaryProjections.get(id) ?? null),
     saveAuxiliaryReminderProjection,
+    ...input.repository,
   };
   const application = {
     materializeDate: vi.fn(async () => ({ ok: true as const, value: [] })),
@@ -304,6 +314,7 @@ describe('ApplicationMedicationAppAdapter reminder reconciliation', () => {
       listAllOccurrences: vi.fn().mockResolvedValue([]),
       listAllInventoryLedger: vi.fn().mockResolvedValue([]),
       listRegimensForDate: vi.fn().mockResolvedValue([]),
+      listRegimensForMedication: vi.fn().mockResolvedValue([]),
       listAllFollowUpItems: vi.fn().mockResolvedValue([]),
       listAllAuxiliaryReminderIntents: vi.fn().mockResolvedValue([]),
     };
@@ -369,6 +380,193 @@ describe('ApplicationMedicationAppAdapter reminder reconciliation', () => {
         status: 'scheduled',
       }),
     );
+  });
+
+  it('creates all initial schedules in one application command without collapsing quantities', async () => {
+    const createMedicationWithSchedules = vi.fn(async (_command: Record<string, unknown>) => ({
+      ok: true as const,
+      value: {
+        medication: { id: 'medication-1' },
+        regimens: [{ id: 'schedule-1' }, { id: 'schedule-2' }, { id: 'schedule-3' }],
+      },
+    }));
+    const fixture = reconciliationFixture({
+      application: { createMedicationWithSchedules },
+    });
+
+    await expect(fixture.adapter.createPersonalMedication({
+      name: '药物 A', initialInventory: 30,
+      schedules: [
+        { reminderTime: '08:00', plannedDoseQuantity: 1 },
+        { reminderTime: '13:00', plannedDoseQuantity: 0.5 },
+        { reminderTime: '20:00', plannedDoseQuantity: 2 },
+      ],
+    })).resolves.toBe('medication-1');
+
+    expect(createMedicationWithSchedules).toHaveBeenCalledOnce();
+    expect(createMedicationWithSchedules.mock.calls[0]?.[0]).toMatchObject({
+      displayName: '药物 A',
+      initialInventoryQuantity: '30',
+      schedules: [
+        { localTime: '08:00', plannedDoseQuantity: '1' },
+        { localTime: '13:00', plannedDoseQuantity: '0.5' },
+        { localTime: '20:00', plannedDoseQuantity: '2' },
+      ],
+    });
+  });
+
+  it('projects every non-retired schedule sorted by time, including paused schedules', async () => {
+    const fixture = reconciliationFixture({
+      medications: [{ id: 'med-1', displayName: '药物 A', status: 'active' }],
+      regimens: [
+        { id: 'reg-evening', status: 'active', currentVersionId: 'version-evening' },
+        {
+          id: 'reg-morning', status: 'paused', currentVersionId: 'version-morning',
+          statusEffectiveLocalDate: '2026-08-25',
+        },
+        {
+          id: 'reg-retired', status: 'active', currentVersionId: 'version-retired',
+          retirementEffectiveLocalDate: '2026-08-24',
+        },
+        {
+          id: 'reg-future-retirement', status: 'active',
+          currentVersionId: 'version-future-retirement',
+          retirementEffectiveLocalDate: '2026-08-26',
+        },
+      ],
+      versions: [
+        {
+          id: 'version-evening', localTime: '20:00', onTimeOffsetMinutes: 60,
+          recordOffsetMinutes: 720,
+          items: [{ medicationId: 'med-1', plannedDoseQuantity: '2' }],
+        },
+        {
+          id: 'version-morning', localTime: '08:00', onTimeOffsetMinutes: 45,
+          recordOffsetMinutes: 600,
+          items: [{ medicationId: 'med-1', plannedDoseQuantity: '1' }],
+        },
+        {
+          id: 'version-retired', localTime: '06:00', onTimeOffsetMinutes: 60,
+          recordOffsetMinutes: 720,
+          items: [{ medicationId: 'med-1', plannedDoseQuantity: '3' }],
+        },
+        {
+          id: 'version-future-retirement', localTime: '13:00', onTimeOffsetMinutes: 60,
+          recordOffsetMinutes: 720,
+          items: [{ medicationId: 'med-1', plannedDoseQuantity: '0.5' }],
+        },
+      ],
+    });
+
+    await fixture.adapter.reconcileToday();
+
+    expect((fixture.adapter.getSnapshot().medications[0] as unknown as {
+      schedules: Record<string, unknown>[];
+    }).schedules).toEqual([
+      {
+        id: 'reg-morning', reminderTime: '08:00', plannedDoseQuantity: 1,
+        status: 'paused', onTimeOffsetMinutes: 45, recordOffsetMinutes: 600,
+      },
+      {
+        id: 'reg-future-retirement', reminderTime: '13:00', plannedDoseQuantity: 0.5,
+        status: 'active', onTimeOffsetMinutes: 60, recordOffsetMinutes: 720,
+      },
+      {
+        id: 'reg-evening', reminderTime: '20:00', plannedDoseQuantity: 2,
+        status: 'active', onTimeOffsetMinutes: 60, recordOffsetMinutes: 720,
+      },
+    ]);
+  });
+
+  it('keeps tomorrow-effective medication and schedule activation changes out of today view', async () => {
+    const fixture = reconciliationFixture({
+      medications: [{
+        id: 'med-1', displayName: '药物 A', status: 'inactive',
+        statusEffectiveLocalDate: '2026-08-26',
+      }],
+      regimens: [{
+        id: 'reg-1', status: 'paused', statusEffectiveLocalDate: '2026-08-26',
+        currentVersionId: 'version-1',
+      }],
+      versions: [{
+        id: 'version-1', localTime: '08:00', onTimeOffsetMinutes: 60,
+        recordOffsetMinutes: 720,
+        items: [{ medicationId: 'med-1', plannedDoseQuantity: '1' }],
+      }],
+    });
+
+    await fixture.adapter.reconcileToday();
+
+    expect(fixture.adapter.getSnapshot().medications[0]).toMatchObject({
+      planState: 'active',
+      schedules: [{ id: 'reg-1', status: 'active' }],
+    });
+  });
+
+  it('does not treat individually paused schedules as a medication-level pause', async () => {
+    const fixture = reconciliationFixture({
+      medications: [{ id: 'med-1', displayName: '药物 A', status: 'active' }],
+      regimens: [
+        { id: 'reg-1', status: 'paused', currentVersionId: 'version-1' },
+        { id: 'reg-2', status: 'paused', currentVersionId: 'version-2' },
+      ],
+      versions: [
+        {
+          id: 'version-1', localTime: '08:00', onTimeOffsetMinutes: 60,
+          recordOffsetMinutes: 720,
+          items: [{ medicationId: 'med-1', plannedDoseQuantity: '1' }],
+        },
+        {
+          id: 'version-2', localTime: '20:00', onTimeOffsetMinutes: 60,
+          recordOffsetMinutes: 720,
+          items: [{ medicationId: 'med-1', plannedDoseQuantity: '1' }],
+        },
+      ],
+    });
+
+    await fixture.adapter.reconcileToday();
+
+    expect(fixture.adapter.getSnapshot().medications[0]).toMatchObject({
+      planState: 'active',
+      schedules: [
+        { id: 'reg-1', status: 'paused' },
+        { id: 'reg-2', status: 'paused' },
+      ],
+    });
+  });
+
+  it('maps medication-level activation results without changing schedule identities', async () => {
+    const pauseMedication = vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        medicationId: 'med-1', status: 'inactive',
+        effectiveLocalDate: '2026-08-25', effective: 'today',
+        affectedRegimenIds: ['reg-1', 'reg-2'],
+        replacedOccurrenceIds: ['occ-1', 'occ-2'],
+        newOccurrenceIds: [],
+        notificationRebuildRequired: true,
+      },
+    }));
+    const fixture = reconciliationFixture({
+      application: { pauseMedication },
+      repository: {
+        getMedication: vi.fn(async () => ({
+          id: 'med-1', status: 'active', rowVersion: 4,
+        })),
+      },
+    });
+
+    await expect(fixture.adapter.pauseMedication('med-1')).resolves.toEqual({
+      effectiveLocalDate: '2026-08-25', effective: 'today',
+      affectedScheduleIds: ['reg-1', 'reg-2'],
+      replacedOccurrenceIds: ['occ-1', 'occ-2'],
+      newOccurrenceIds: [],
+      notificationRebuildRequired: true,
+    });
+    expect(pauseMedication).toHaveBeenCalledWith(expect.objectContaining({
+      medicationId: 'med-1', expectedRowVersion: 4,
+      currentLocalDate: '2026-08-25', currentAtUtc: NOW,
+    }));
   });
 
   it('reconciles today plus every older open scheduled, due or prepared service date', async () => {

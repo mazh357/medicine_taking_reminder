@@ -9,10 +9,12 @@ import {
 } from "react-native";
 
 import { useAppAppearance } from "../state/AppAppearanceProvider";
+import { FeatureIcon, type FeatureIconName } from "./feature-icon";
 import { spacing } from "./theme";
 
 type ScreenProps = PropsWithChildren<{
   title: string;
+  featureIcon?: FeatureIconName;
   subtitle?: string;
   headerRight?: ReactNode;
   scroll?: boolean;
@@ -20,6 +22,7 @@ type ScreenProps = PropsWithChildren<{
 
 export function Screen({
   title,
+  featureIcon,
   subtitle,
   headerRight,
   scroll = true,
@@ -29,11 +32,22 @@ export function Screen({
   const content = (
     <>
       <View style={styles.header}>
-        <View style={styles.headingCopy}>
-          <Text accessibilityRole="header" style={[styles.title, { color: colors.text, fontSize: 28 * textScale }]}>
-            {title}
-          </Text>
-          {subtitle ? <Text style={[styles.subtitle, { color: colors.muted, fontSize: 15 * textScale }]}>{subtitle}</Text> : null}
+        <View style={styles.headingGroup}>
+          {featureIcon ? (
+            <FeatureIcon
+              color={colors.primary}
+              contained
+              containerColor={colors.primarySoft}
+              name={featureIcon}
+              selected
+            />
+          ) : null}
+          <View style={styles.headingCopy}>
+            <Text accessibilityRole="header" style={[styles.title, { color: colors.text, fontSize: 28 * textScale }]}>
+              {title}
+            </Text>
+            {subtitle ? <Text style={[styles.subtitle, { color: colors.muted, fontSize: 15 * textScale }]}>{subtitle}</Text> : null}
+          </View>
         </View>
         {headerRight}
       </View>
@@ -70,6 +84,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   headingCopy: { flex: 1 },
+  headingGroup: { alignItems: "flex-start", flex: 1, flexDirection: "row", gap: spacing.sm },
   title: { fontSize: 28, fontWeight: "800" },
   subtitle: { fontSize: 15, lineHeight: 22, marginTop: 4 },
 });

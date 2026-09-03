@@ -7,7 +7,7 @@ import {
 
 import {
   adaptExpoSQLite,
-  initializePersonalDatabaseV4,
+  initializePersonalDatabaseV6,
   type SqlDatabase,
 } from '../storage';
 import {
@@ -129,6 +129,6 @@ export const expoSecureDatabaseDependencies: SecureDatabaseDependencies = {
       finalizeUnusedStatementsBeforeClosing: false,
     }),
   keyProvider: expoDatabaseKeyProvider,
-  initialize: initializePersonalDatabaseV4,
+  initialize: initializePersonalDatabaseV6,
   nowUtc: () => new Date().toISOString(),
 };

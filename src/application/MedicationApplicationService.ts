@@ -38,6 +38,7 @@ import {
   type FollowUpItemEvent,
   type InventoryForecast,
   type InventoryForecastPreference,
+  type MedicationActivationResult,
   type PersonalDoseOccurrence,
   type PersonalConsumptionAssertionFact,
   type PersonalHistoryEntry,
@@ -57,6 +58,7 @@ import type {
   CorrectInventoryCommand,
   ConfirmPersonalOccurrenceItemsCommand,
   CreateMedicationCommand,
+  CreateMedicationWithSchedulesCommand,
   CreateRegimenCommand,
   CreateFollowUpItemCommand,
   EditFollowUpItemCommand,
@@ -64,6 +66,7 @@ import type {
   InitializeAppProfileCommand,
   MaterializeDateCommand,
   PauseRegimenCommand,
+  PauseMedicationCommand,
   PersonalWriteCommand,
   PreparePersonalBySkippingCommand,
   PreparePersonalWithPhotoCommand,
@@ -72,6 +75,8 @@ import type {
   ReconcileAuxiliaryRemindersCommand,
   RequestPhotoDeletionCommand,
   ResumeRegimenCommand,
+  ResumeMedicationCommand,
+  RetireRegimenCommand,
   RevisePersonalItemConfirmationCommand,
   RevokePersonalItemConfirmationCommand,
   RevokePersonalOccurrenceCommand,
@@ -86,6 +91,17 @@ import type {
 } from './personalPorts';
 
 type CommandResult<T> = Promise<Result<T>>;
+type NewRegimenInput = Pick<
+  CreateRegimenCommand,
+  | 'name'
+  | 'localTime'
+  | 'timeZone'
+  | 'onTimeOffsetMinutes'
+  | 'recordOffsetMinutes'
+  | 'captureMode'
+  | 'startLocalDate'
+  | 'items'
+>;
 
 export class MedicationApplicationService {
   constructor(private readonly dependencies: MedicationApplicationDependencies) {}
@@ -149,6 +165,7 @@ export class MedicationApplicationService {
         displayName,
         quantityUnit: 'count',
         status: 'active',
+        statusEffectiveLocalDate: null,
         createdAtUtc: command.issuedAtUtc,
         updatedAtUtc: command.issuedAtUtc,
         rowVersion: 1,
@@ -180,75 +197,80 @@ export class MedicationApplicationService {
     });
   }
 
+  createMedicationWithSchedules(
+    command: CreateMedicationWithSchedulesCommand,
+  ): CommandResult<{ medication: PersonalMedication; regimens: PersonalRegimen[] }> {
+    return this.executeIdempotent('CreateMedicationWithSchedules', command, async (repository) => {
+      await this.requireProfile(repository);
+      if (command.schedules.length < 1 || command.schedules.length > 8) {
+        throw new DomainRuleError('VALIDATION_FAILED', 'error.medication_schedule_count_invalid');
+      }
+      const normalizedTimes = command.schedules.map((schedule) => {
+        assertLocalDate(schedule.startLocalDate);
+        assertLocalTime(schedule.localTime);
+        return schedule.localTime;
+      });
+      if (new Set(normalizedTimes).size !== normalizedTimes.length) {
+        throw new DomainRuleError('VALIDATION_FAILED', 'error.duplicate_medication_schedule_time');
+      }
+
+      const medication: PersonalMedication = {
+        id: this.dependencies.ids.next(),
+        displayName: assertMedicationDisplayName(command.displayName),
+        quantityUnit: 'count',
+        status: 'active',
+        statusEffectiveLocalDate: null,
+        createdAtUtc: command.issuedAtUtc,
+        updatedAtUtc: command.issuedAtUtc,
+        rowVersion: 1,
+      };
+      const initialInventory = normalizeNonNegativeQuantity(command.initialInventoryQuantity);
+      await repository.insertMedication(medication);
+      await repository.insertInventoryForecastPreference({
+        medicationId: medication.id,
+        leadDays: 7,
+        updatedAtUtc: command.issuedAtUtc,
+        rowVersion: 1,
+      });
+      if (isPositiveQuantity(initialInventory)) {
+        await repository.insertInventoryEntry({
+          id: this.dependencies.ids.next(),
+          medicationId: medication.id,
+          entryType: 'initial',
+          quantityDelta: signedQuantityFromMilliunits(quantityToMilliunits(initialInventory)),
+          quantityUnit: 'count',
+          sourceFactType: 'medication',
+          sourceFactId: medication.id,
+          reversesEntryId: null,
+          reasonCode: 'initial_inventory',
+          effectiveAtUtc: command.issuedAtUtc,
+          recordedAtUtc: command.issuedAtUtc,
+          commandId: command.commandId,
+        });
+      }
+
+      const regimens: PersonalRegimen[] = [];
+      for (const schedule of command.schedules) {
+        const regimen = await this.insertNewRegimen(repository, {
+          name: schedule.name,
+          localTime: schedule.localTime,
+          timeZone: schedule.timeZone,
+          onTimeOffsetMinutes: schedule.onTimeOffsetMinutes,
+          recordOffsetMinutes: schedule.recordOffsetMinutes,
+          captureMode: schedule.captureMode,
+          startLocalDate: schedule.startLocalDate,
+          items: [{ medicationId: medication.id, plannedDoseQuantity: schedule.plannedDoseQuantity }],
+        }, command);
+        regimens.push(regimen);
+      }
+      return { medication, regimens };
+    });
+  }
+
   createRegimen(command: CreateRegimenCommand): CommandResult<PersonalRegimen> {
     return this.executeIdempotent('CreateRegimen', command, async (repository) => {
       await this.requireProfile(repository);
-      assertLocalDate(command.startLocalDate);
-      assertLocalTime(command.localTime);
-      assertWindowOffsets(command.onTimeOffsetMinutes, command.recordOffsetMinutes);
-      if (!command.name.trim() || !command.timeZone.trim() || command.items.length === 0) {
-        throw new DomainRuleError('VALIDATION_FAILED', 'error.regimen_fields_required');
-      }
-      if (new Set(command.items.map((item) => item.medicationId)).size !== command.items.length) {
-        throw new DomainRuleError('VALIDATION_FAILED', 'error.duplicate_regimen_medication');
-      }
-      const regimenId = this.dependencies.ids.next();
-      const versionId = this.dependencies.ids.next();
-      const items = [];
-      for (const [sortOrder, input] of command.items.entries()) {
-        const medication = await repository.getMedication(input.medicationId);
-        if (!medication || medication.status !== 'active') {
-          throw new DomainRuleError('NOT_FOUND', 'error.medication_not_found');
-        }
-        items.push({
-          id: this.dependencies.ids.next(),
-          regimenVersionId: versionId,
-          medicationId: medication.id,
-          plannedDoseQuantity: normalizePositiveQuantity(input.plannedDoseQuantity),
-          quantityUnit: 'count' as const,
-          sortOrder,
-        });
-      }
-      const version: RegimenVersion = {
-        id: versionId,
-        regimenId,
-        versionNumber: 1,
-        name: command.name.trim(),
-        localTime: command.localTime,
-        timeZone: command.timeZone.trim(),
-        onTimeOffsetMinutes: command.onTimeOffsetMinutes,
-        recordOffsetMinutes: command.recordOffsetMinutes,
-        captureMode: command.captureMode,
-        effectiveLocalDate: command.startLocalDate,
-        effectiveToLocalDate: null,
-        supersededAtUtc: null,
-        supersedesVersionId: null,
-        items,
-        createdAtUtc: command.issuedAtUtc,
-      };
-      const regimen: PersonalRegimen = {
-        id: regimenId,
-        status: 'active',
-        statusEffectiveLocalDate: command.startLocalDate,
-        currentVersionId: versionId,
-        rowVersion: 1,
-        createdAtUtc: command.issuedAtUtc,
-        updatedAtUtc: command.issuedAtUtc,
-      };
-      await repository.insertRegimen(regimen, version);
-      await repository.appendRegimenRevision({
-        id: this.dependencies.ids.next(),
-        regimenId,
-        revisionType: 'created',
-        previousVersionId: null,
-        newVersionId: versionId,
-        effectiveLocalDate: command.startLocalDate,
-        replacedOccurrenceId: null,
-        newOccurrenceId: null,
-        recordedAtUtc: command.issuedAtUtc,
-        commandId: command.commandId,
-      });
-      return regimen;
+      return this.insertNewRegimen(repository, command, command);
     });
   }
 
@@ -265,6 +287,15 @@ export class MedicationApplicationService {
         }
         const version = await repository.getEffectiveRegimenVersion(regimen.id, command.localDate);
         if (!version) continue;
+        let medicationsActive = true;
+        for (const item of version.items) {
+          const medication = await repository.getMedication(item.medicationId);
+          if (!medication || !this.isMedicationActiveOnDate(medication, command.localDate)) {
+            medicationsActive = false;
+            break;
+          }
+        }
+        if (!medicationsActive) continue;
         occurrences.push(
           await this.createOccurrence(repository, regimen, version, command.localDate, command),
         );
@@ -302,6 +333,14 @@ export class MedicationApplicationService {
       const effectiveLocalDate = canReplaceToday
         ? command.currentLocalDate
         : nextLocalDate(command.currentLocalDate);
+
+      await this.assertRegimenAvailability(
+        repository,
+        currentVersion.items.map((item) => item.medicationId),
+        localTime,
+        effectiveLocalDate,
+        regimen.id,
+      );
 
       const versionId = this.dependencies.ids.next();
       const itemChangeMap = new Map(
@@ -423,6 +462,85 @@ export class MedicationApplicationService {
 
   resumeRegimen(command: ResumeRegimenCommand): CommandResult<PlanChangeResult> {
     return this.setRegimenActivation(command, 'active');
+  }
+
+  retireRegimen(command: RetireRegimenCommand): CommandResult<PlanChangeResult> {
+    return this.executeIdempotent('RetireRegimen', command, async (repository) => {
+      assertLocalDate(command.currentLocalDate);
+      assertUtcInstant(command.currentAtUtc);
+      const regimen = await this.requireRegimen(repository, command.regimenId);
+      if (regimen.rowVersion !== command.expectedRowVersion) {
+        throw new DomainRuleError('VERSION_CONFLICT', 'error.regimen_version_conflict');
+      }
+      if (regimen.retirementEffectiveLocalDate != null) {
+        return {
+          effectiveLocalDate: regimen.retirementEffectiveLocalDate,
+          effective:
+            regimen.retirementEffectiveLocalDate <= command.currentLocalDate
+              ? 'today'
+              : 'tomorrow',
+          notificationRebuildRequired: false,
+        };
+      }
+      const version =
+        (await repository.getEffectiveRegimenVersion(regimen.id, command.currentLocalDate)) ??
+        (await this.requireRegimenVersion(repository, regimen.currentVersionId));
+      const todayOccurrence = await repository.findActiveOccurrence(
+        regimen.id,
+        command.currentLocalDate,
+      );
+      const scheduleToday = this.resolveSchedule(version, command.currentLocalDate);
+      const effectiveToday =
+        Date.parse(scheduleToday.scheduledAtUtc) > Date.parse(command.currentAtUtc) &&
+        (!todayOccurrence || todayOccurrence.currentLifecycle === 'scheduled');
+      const effectiveLocalDate = effectiveToday
+        ? command.currentLocalDate
+        : nextLocalDate(command.currentLocalDate);
+      await repository.retireRegimen(
+        {
+          regimenId: regimen.id,
+          effectiveLocalDate,
+          recordedAtUtc: command.issuedAtUtc,
+          commandId: command.commandId,
+        },
+        command.expectedRowVersion,
+        command.issuedAtUtc,
+      );
+      const affected = await repository.listActiveOccurrencesForRegimenFromDate(
+        regimen.id,
+        effectiveLocalDate,
+      );
+      let replacedOccurrenceId: string | undefined;
+      for (const occurrence of affected) {
+        if (
+          occurrence.localServiceDate === command.currentLocalDate &&
+          (occurrence.currentLifecycle !== 'scheduled' ||
+            Date.parse(occurrence.scheduledAtUtc) <= Date.parse(command.currentAtUtc))
+        ) continue;
+        await repository.replaceOccurrence(
+          occurrence.id,
+          null,
+          command.commandId,
+          command.issuedAtUtc,
+        );
+        await repository.cancelReminderIntent(occurrence.id, command.issuedAtUtc);
+        replacedOccurrenceId ??= occurrence.id;
+      }
+      return {
+        effectiveLocalDate,
+        effective: effectiveToday ? 'today' : 'tomorrow',
+        ...(replacedOccurrenceId ? { replacedOccurrenceId } : {}),
+        notificationRebuildRequired: true,
+      };
+    });
+  }
+
+  pauseMedication(command: PauseMedicationCommand): CommandResult<MedicationActivationResult> {
+    return this.setMedicationActivation(command, 'inactive');
+  }
+
+  resumeMedication(command: ResumeMedicationCommand): CommandResult<MedicationActivationResult> {
+    return this.setMedicationActivation(command, 'active');
   }
 
   correctInventory(command: CorrectInventoryCommand): CommandResult<{
@@ -1220,7 +1338,9 @@ export class MedicationApplicationService {
       effectiveTriggerAtUtc: null,
       unavailableReason: reason,
     });
-    if (medication.status !== 'active') return unavailable('medication_inactive');
+    if (!this.isMedicationActiveOnDate(medication, currentLocalDate)) {
+      return unavailable('medication_inactive');
+    }
     const plans = await repository.listActiveDailyPlansForMedication(
       medicationId,
       currentLocalDate,
@@ -1735,7 +1855,8 @@ export class MedicationApplicationService {
         for (const occurrence of affected) {
           if (
             occurrence.localServiceDate === command.currentLocalDate &&
-            occurrence.currentLifecycle !== 'scheduled'
+            (occurrence.currentLifecycle !== 'scheduled' ||
+              Date.parse(occurrence.scheduledAtUtc) <= Date.parse(command.currentAtUtc))
           ) {
             continue;
           }
@@ -1780,6 +1901,265 @@ export class MedicationApplicationService {
         notificationRebuildRequired: true,
       };
     });
+  }
+
+  private async setMedicationActivation(
+    command: PauseMedicationCommand | ResumeMedicationCommand,
+    status: PersonalMedication['status'],
+  ): CommandResult<MedicationActivationResult> {
+    const commandType = status === 'inactive' ? 'PauseMedication' : 'ResumeMedication';
+    return this.executeIdempotent(commandType, command, async (repository) => {
+      assertLocalDate(command.currentLocalDate);
+      assertUtcInstant(command.currentAtUtc);
+      const medication = await repository.getMedication(command.medicationId);
+      if (!medication) throw new DomainRuleError('NOT_FOUND', 'error.medication_not_found');
+      if (medication.rowVersion !== command.expectedRowVersion) {
+        throw new DomainRuleError('VERSION_CONFLICT', 'error.medication_version_conflict');
+      }
+      if (
+        medication.status === status &&
+        (medication.statusEffectiveLocalDate == null ||
+          medication.statusEffectiveLocalDate <= command.currentLocalDate)
+      ) {
+        return {
+          medicationId: medication.id,
+          status,
+          effectiveLocalDate: command.currentLocalDate,
+          effective: 'today',
+          affectedRegimenIds: [],
+          replacedOccurrenceIds: [],
+          newOccurrenceIds: [],
+          notificationRebuildRequired: false,
+        };
+      }
+
+      const allRegimens = await repository.listRegimensForMedication(medication.id);
+      const eligible: { regimen: PersonalRegimen; version: RegimenVersion }[] = [];
+      for (const regimen of allRegimens) {
+        if (
+          regimen.retirementEffectiveLocalDate != null &&
+          regimen.retirementEffectiveLocalDate <= command.currentLocalDate
+        ) continue;
+        if (!this.isRegimenActiveOnDate(regimen, command.currentLocalDate)) continue;
+        const version =
+          (await repository.getEffectiveRegimenVersion(regimen.id, command.currentLocalDate)) ??
+          (await repository.getRegimenVersion(regimen.currentVersionId));
+        if (version) eligible.push({ regimen, version });
+      }
+      const canChangeToday: boolean[] = [];
+      for (const { regimen, version } of eligible) {
+        const schedule = this.resolveSchedule(version, command.currentLocalDate);
+        const occurrence = await repository.findActiveOccurrence(
+          regimen.id,
+          command.currentLocalDate,
+        );
+        canChangeToday.push(
+          Date.parse(schedule.scheduledAtUtc) > Date.parse(command.currentAtUtc) &&
+          (!occurrence || occurrence.currentLifecycle === 'scheduled'),
+        );
+      }
+      // Pausing may safely suppress only the future, not-yet-started tasks while
+      // retaining earlier facts. Resuming has no per-medication suppression fact
+      // for an already-passed schedule; marking the medication active today would
+      // let a later materialization create that old task as a new missed record.
+      // Therefore a same-day resume is allowed only when every affected schedule
+      // is still in the future. Otherwise the whole medication resumes tomorrow.
+      const effectiveToday = eligible.length === 0 || (
+        status === 'inactive'
+          ? canChangeToday.some(Boolean)
+          : canChangeToday.every(Boolean)
+      );
+      const effectiveLocalDate = effectiveToday
+        ? command.currentLocalDate
+        : nextLocalDate(command.currentLocalDate);
+      await repository.setMedicationStatus({
+        medicationId: medication.id,
+        status,
+        effectiveLocalDate,
+        expectedRowVersion: command.expectedRowVersion,
+        updatedAtUtc: command.issuedAtUtc,
+      });
+
+      const replacedOccurrenceIds: string[] = [];
+      const newOccurrenceIds: string[] = [];
+      if (status === 'inactive') {
+        for (const { regimen } of eligible) {
+          const affected = await repository.listActiveOccurrencesForRegimenFromDate(
+            regimen.id,
+            effectiveLocalDate,
+          );
+          for (const occurrence of affected) {
+            if (
+              occurrence.localServiceDate === command.currentLocalDate &&
+              (occurrence.currentLifecycle !== 'scheduled' ||
+                Date.parse(occurrence.scheduledAtUtc) <= Date.parse(command.currentAtUtc))
+            ) continue;
+            await repository.replaceOccurrence(
+              occurrence.id,
+              null,
+              command.commandId,
+              command.issuedAtUtc,
+            );
+            await repository.cancelReminderIntent(occurrence.id, command.issuedAtUtc);
+            replacedOccurrenceIds.push(occurrence.id);
+          }
+        }
+      } else if (effectiveToday) {
+        for (const { regimen, version } of eligible) {
+          const schedule = this.resolveSchedule(version, command.currentLocalDate);
+          if (Date.parse(schedule.scheduledAtUtc) <= Date.parse(command.currentAtUtc)) continue;
+          if (await repository.findActiveOccurrence(regimen.id, command.currentLocalDate)) continue;
+          const occurrence = await this.createOccurrence(
+            repository,
+            regimen,
+            version,
+            command.currentLocalDate,
+            command,
+          );
+          newOccurrenceIds.push(occurrence.id);
+        }
+      }
+      return {
+        medicationId: medication.id,
+        status,
+        effectiveLocalDate,
+        effective: effectiveToday ? 'today' : 'tomorrow',
+        affectedRegimenIds: eligible.map(({ regimen }) => regimen.id),
+        replacedOccurrenceIds,
+        newOccurrenceIds,
+        notificationRebuildRequired:
+          replacedOccurrenceIds.length > 0 || newOccurrenceIds.length > 0,
+      };
+    });
+  }
+
+  private async insertNewRegimen(
+    repository: MedicationRepository,
+    input: NewRegimenInput,
+    command: PersonalWriteCommand,
+  ): Promise<PersonalRegimen> {
+    assertLocalDate(input.startLocalDate);
+    assertLocalTime(input.localTime);
+    assertIanaTimeZone(input.timeZone);
+    assertWindowOffsets(input.onTimeOffsetMinutes, input.recordOffsetMinutes);
+    if (!input.name.trim() || !input.timeZone.trim() || input.items.length === 0) {
+      throw new DomainRuleError('VALIDATION_FAILED', 'error.regimen_fields_required');
+    }
+    if (new Set(input.items.map((item) => item.medicationId)).size !== input.items.length) {
+      throw new DomainRuleError('VALIDATION_FAILED', 'error.duplicate_regimen_medication');
+    }
+    await this.assertRegimenAvailability(
+      repository,
+      input.items.map((item) => item.medicationId),
+      input.localTime,
+      input.startLocalDate,
+    );
+    const regimenId = this.dependencies.ids.next();
+    const versionId = this.dependencies.ids.next();
+    const items = [];
+    for (const [sortOrder, item] of input.items.entries()) {
+      const medication = await repository.getMedication(item.medicationId);
+      if (!medication || !this.isMedicationActiveOnDate(medication, input.startLocalDate)) {
+        throw new DomainRuleError('NOT_FOUND', 'error.medication_not_found');
+      }
+      items.push({
+        id: this.dependencies.ids.next(),
+        regimenVersionId: versionId,
+        medicationId: medication.id,
+        plannedDoseQuantity: normalizePositiveQuantity(item.plannedDoseQuantity),
+        quantityUnit: 'count' as const,
+        sortOrder,
+      });
+    }
+    const version: RegimenVersion = {
+      id: versionId,
+      regimenId,
+      versionNumber: 1,
+      name: this.assertRegimenName(input.name),
+      localTime: input.localTime,
+      timeZone: input.timeZone.trim(),
+      onTimeOffsetMinutes: input.onTimeOffsetMinutes,
+      recordOffsetMinutes: input.recordOffsetMinutes,
+      captureMode: input.captureMode,
+      effectiveLocalDate: input.startLocalDate,
+      effectiveToLocalDate: null,
+      supersededAtUtc: null,
+      supersedesVersionId: null,
+      items,
+      createdAtUtc: command.issuedAtUtc,
+    };
+    const regimen: PersonalRegimen = {
+      id: regimenId,
+      status: 'active',
+      statusEffectiveLocalDate: input.startLocalDate,
+      currentVersionId: versionId,
+      rowVersion: 1,
+      createdAtUtc: command.issuedAtUtc,
+      updatedAtUtc: command.issuedAtUtc,
+      retirementEffectiveLocalDate: null,
+    };
+    await repository.insertRegimen(regimen, version);
+    await repository.appendRegimenRevision({
+      id: this.dependencies.ids.next(),
+      regimenId,
+      revisionType: 'created',
+      previousVersionId: null,
+      newVersionId: versionId,
+      effectiveLocalDate: input.startLocalDate,
+      replacedOccurrenceId: null,
+      newOccurrenceId: null,
+      recordedAtUtc: command.issuedAtUtc,
+      commandId: command.commandId,
+    });
+    return regimen;
+  }
+
+  private async assertRegimenAvailability(
+    repository: MedicationRepository,
+    medicationIds: string[],
+    localTime: string,
+    localDate: string,
+    excludedRegimenId?: string,
+  ): Promise<void> {
+    for (const medicationId of medicationIds) {
+      const existing = (await repository.listRegimensForMedication(medicationId)).filter(
+        (regimen) =>
+          regimen.id !== excludedRegimenId &&
+          (regimen.retirementEffectiveLocalDate == null ||
+            regimen.retirementEffectiveLocalDate > localDate),
+      );
+      if (existing.length >= 8) {
+        throw new DomainRuleError('VALIDATION_FAILED', 'error.medication_schedule_limit');
+      }
+      for (const regimen of existing) {
+        const version =
+          (await repository.getEffectiveRegimenVersion(regimen.id, localDate)) ??
+          (await repository.getRegimenVersion(regimen.currentVersionId));
+        if (version?.localTime === localTime) {
+          throw new DomainRuleError(
+            'VALIDATION_FAILED',
+            'error.duplicate_medication_schedule_time',
+          );
+        }
+      }
+    }
+  }
+
+  private isMedicationActiveOnDate(medication: PersonalMedication, localDate: string): boolean {
+    if (medication.statusEffectiveLocalDate == null) return medication.status === 'active';
+    return medication.status === 'active'
+      ? medication.statusEffectiveLocalDate <= localDate
+      : medication.statusEffectiveLocalDate > localDate;
+  }
+
+  private isRegimenActiveOnDate(regimen: PersonalRegimen, localDate: string): boolean {
+    if (
+      regimen.retirementEffectiveLocalDate != null &&
+      regimen.retirementEffectiveLocalDate <= localDate
+    ) return false;
+    return regimen.status === 'active'
+      ? regimen.statusEffectiveLocalDate <= localDate
+      : regimen.statusEffectiveLocalDate > localDate;
   }
 
   private async createOccurrence(

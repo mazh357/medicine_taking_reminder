@@ -2,6 +2,22 @@ const { withAndroidManifest, withDangerousMod } = require('@expo/config-plugins'
 const { mkdir, writeFile } = require('node:fs/promises');
 const path = require('node:path');
 
+// Persist the offline release boundary through every Expo prebuild, not just an ignored native file.
+const OFFLINE_RELEASE_MANIFEST = `<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
+  <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
+  <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" tools:node="remove" />
+  <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" tools:node="remove" />
+  <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" tools:node="remove" />
+  <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" tools:node="remove" />
+  <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" tools:node="remove" />
+  <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" tools:node="remove" />
+  <application android:usesCleartextTraffic="false" tools:replace="android:usesCleartextTraffic">
+    <meta-data android:name="expo.modules.updates.ENABLED" android:value="false" tools:replace="android:value" />
+  </application>
+</manifest>
+`;
+
 const DATA_EXTRACTION_RULES = `<?xml version="1.0" encoding="utf-8"?>
 <data-extraction-rules>
   <cloud-backup>
@@ -56,9 +72,12 @@ module.exports = function withAndroidDataProtection(config) {
   return withDangerousMod(config, ['android', async (modConfig) => {
     const xmlDirectory = path.join(modConfig.modRequest.platformProjectRoot, 'app', 'src', 'main', 'res', 'xml');
     await mkdir(xmlDirectory, { recursive: true });
+    const releaseDirectory = path.join(modConfig.modRequest.platformProjectRoot, 'app', 'src', 'release');
+    await mkdir(releaseDirectory, { recursive: true });
     await Promise.all([
       writeFile(path.join(xmlDirectory, 'data_extraction_rules.xml'), DATA_EXTRACTION_RULES, 'utf8'),
       writeFile(path.join(xmlDirectory, 'backup_rules.xml'), FULL_BACKUP_RULES, 'utf8'),
+      writeFile(path.join(releaseDirectory, 'AndroidManifest.xml'), OFFLINE_RELEASE_MANIFEST, 'utf8'),
     ]);
     return modConfig;
   }]);

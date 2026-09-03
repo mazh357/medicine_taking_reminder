@@ -3,6 +3,8 @@ export * from './migrations/v1';
 export * from './migrations/v2';
 export * from './migrations/v3';
 export * from './migrations/v4';
+export * from './migrations/v5';
+export * from './migrations/v6';
 export * from './SqliteMedicationRepository';
 export * from './SqliteMedicationUnitOfWork';
 export * from './SqliteDemoRepository';

@@ -1,4 +1,7 @@
 import { MedicationApplicationService } from '../../application';
+import { OnDeviceVisionProvider } from 'medication-vision-module';
+import { AppState } from 'react-native';
+import { VisionLabService } from '../vision/VisionLabService';
 import {
   ApplicationMedicationAppAdapter,
   DemoPillCounterAdapter,
@@ -15,6 +18,7 @@ import {
 import { initializeSecureLocalStorage } from './secureLocalStorage';
 
 export interface DemoRuntime {
+  vision: VisionLabService;
   api: ApplicationMedicationAppAdapter;
   application: MedicationApplicationService;
   reminders: LocalReminderService;
@@ -31,8 +35,14 @@ export interface DemoRuntime {
  */
 export async function createDemoRuntime(): Promise<DemoRuntime> {
   const secure = await initializeSecureLocalStorage();
+  let releaseVision: (() => Promise<void>) | undefined;
   try {
     const ids = new RuntimeIdGenerator();
+    const vision = new VisionLabService(secure.storage.database, secure.media, new OnDeviceVisionProvider(), () => ids.next());
+    // A pending visual-file cleanup must not block the medication main flow.
+    await vision.cleanupDeleted().catch(() => undefined);
+    const visionState = AppState.addEventListener('change', (state) => { if (state !== 'active') void vision.cancel(); });
+    releaseVision = async () => { visionState.remove(); await vision.dispose(); };
     const clock = new RuntimeClock();
     const unitOfWork = new SqliteMedicationUnitOfWork(secure.storage.database);
     const application = new MedicationApplicationService({
@@ -60,6 +70,8 @@ export async function createDemoRuntime(): Promise<DemoRuntime> {
         return row?.user_version ?? null;
       },
       clearPersonalData: async () => {
+        visionState.remove();
+        await vision.dispose();
         await reminders.clearAll();
         await secure.media.clearAll();
         await secure.destroyAfterExplicitDataClear();
@@ -67,15 +79,17 @@ export async function createDemoRuntime(): Promise<DemoRuntime> {
     });
     await api.initialize();
     return {
+      vision,
       api,
       application,
       reminders,
       notificationCapability,
       startupNotice: secure.startupNotice,
       reconcile: () => api.reconcileToday(),
-      dispose: () => secure.dispose(),
+      dispose: async () => { visionState.remove(); await vision.dispose(); await secure.dispose(); },
     };
   } catch (error) {
+    await releaseVision?.().catch(() => undefined);
     await secure.dispose().catch(() => undefined);
     throw error;
   }

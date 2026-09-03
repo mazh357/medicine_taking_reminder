@@ -24,11 +24,15 @@ export class AppPrivateMediaStore implements PrivateMediaStore {
     occurrenceId: string,
     capturedAt = new Date(),
   ): Promise<StoredPrivatePhoto> {
+    if (!occurrenceId.trim()) throw new Error('Occurrence identifier is required');
+    return this.persistPrivateCapture(capture, capturedAt);
+  }
+
+  async persistPrivateCapture(capture: CameraCaptureResult, capturedAt = new Date()): Promise<StoredPrivatePhoto> {
     if (!CAMERA_URI_PATTERN.test(capture.uri)) {
       throw new PhotoSaveError('unsupported_path', 'Camera file reference is unsupported');
     }
     if (!Number.isFinite(capturedAt.getTime())) throw new Error('Invalid capture time');
-    if (!occurrenceId.trim()) throw new Error('Occurrence identifier is required');
     const photoId = this.requireOpaqueId(this.nextOpaqueId());
     let stagedUri: string | undefined;
     try {

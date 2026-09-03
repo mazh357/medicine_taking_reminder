@@ -33,6 +33,23 @@ export interface CreateMedicationCommand extends PersonalWriteCommand {
   initialInventoryQuantity: string;
 }
 
+export interface MedicationScheduleCommandInput {
+  name: string;
+  localTime: LocalTime;
+  timeZone: string;
+  onTimeOffsetMinutes: number;
+  recordOffsetMinutes: number;
+  captureMode: CaptureMode;
+  plannedDoseQuantity: string;
+  startLocalDate: LocalDate;
+}
+
+export interface CreateMedicationWithSchedulesCommand extends PersonalWriteCommand {
+  displayName: string;
+  initialInventoryQuantity: string;
+  schedules: MedicationScheduleCommandInput[];
+}
+
 export interface CreateRegimenCommand extends PersonalWriteCommand {
   name: string;
   localTime: LocalTime;
@@ -80,6 +97,23 @@ export interface ResumeRegimenCommand extends PersonalWriteCommand {
   currentLocalDate: LocalDate;
   currentAtUtc: UtcInstant;
 }
+
+export interface RetireRegimenCommand extends PersonalWriteCommand {
+  regimenId: EntityId;
+  expectedRowVersion: number;
+  currentLocalDate: LocalDate;
+  currentAtUtc: UtcInstant;
+}
+
+export interface SetMedicationActivationCommand extends PersonalWriteCommand {
+  medicationId: EntityId;
+  expectedRowVersion: number;
+  currentLocalDate: LocalDate;
+  currentAtUtc: UtcInstant;
+}
+
+export type PauseMedicationCommand = SetMedicationActivationCommand;
+export type ResumeMedicationCommand = SetMedicationActivationCommand;
 
 export interface CorrectInventoryCommand extends PersonalWriteCommand {
   medicationId: EntityId;

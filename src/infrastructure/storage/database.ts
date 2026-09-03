@@ -23,17 +23,21 @@ export interface ExpoSQLiteDatabaseLike {
 
 /** Keeps expo-sqlite behind an injectable boundary so domain tests do not load native code. */
 export function adaptExpoSQLite(database: ExpoSQLiteDatabaseLike): SqlDatabase {
+  // One connection is shared by medication and visual repositories. Serialize transactions.
+  let transactionTail: Promise<unknown> = Promise.resolve();
   return {
     execAsync: (sql) => database.execAsync(sql),
     runAsync: (sql, ...params) => database.runAsync(sql, ...params),
     getFirstAsync: (sql, ...params) => database.getFirstAsync(sql, ...params),
     getAllAsync: (sql, ...params) => database.getAllAsync(sql, ...params),
-    withTransactionAsync: async <T>(operation: () => Promise<T>) => {
-      let result: T | undefined;
-      await database.withTransactionAsync(async () => {
-        result = await operation();
+    withTransactionAsync: <T>(operation: () => Promise<T>) => {
+      const pending = transactionTail.then(async () => {
+        let result: T | undefined;
+        await database.withTransactionAsync(async () => { result = await operation(); });
+        return result as T;
       });
-      return result as T;
+      transactionTail = pending.catch(() => undefined);
+      return pending;
     },
   };
 }

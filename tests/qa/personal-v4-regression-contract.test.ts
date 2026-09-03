@@ -27,8 +27,8 @@ function occurrence(overrides: Partial<OccurrenceView> = {}): OccurrenceView {
   };
 }
 
-describe('QA: personal schema v4 runtime and clear contract', () => {
-  it('keeps app config, runtime initializer and migration target on v4', () => {
+describe('QA: personal schema runtime and clear contract', () => {
+  it('keeps app config and runtime on v6 while retaining the v4 migration', () => {
     const appJson = JSON.parse(readFileSync(resolve('app.json'), 'utf8'));
     const runtime = readFileSync(
       resolve('src/infrastructure/runtime/securePersonalDatabase.ts'),
@@ -39,9 +39,9 @@ describe('QA: personal schema v4 runtime and clear contract', () => {
       'utf8',
     );
 
-    expect(appJson.expo.extra.storageSchemaVersion).toBe(4);
-    expect(runtime).toContain('initializePersonalDatabaseV4');
-    expect(runtime).toContain('initialize: initializePersonalDatabaseV4');
+    expect(appJson.expo.extra.storageSchemaVersion).toBe(6);
+    expect(runtime).toContain('initializePersonalDatabaseV6');
+    expect(runtime).toContain('initialize: initializePersonalDatabaseV6');
     expect(migration).toContain('PERSONAL_SCHEMA_VERSION_V4 = 4');
     expect(migration).toContain('PRAGMA user_version = ${PERSONAL_SCHEMA_VERSION_V4}');
   });

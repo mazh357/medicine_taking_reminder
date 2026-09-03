@@ -106,9 +106,12 @@ export default function SettingsScreen() {
   };
 
   return (
-    <Screen title="设置">
+    <Screen featureIcon="settings" title="设置">
+      <Card title="实验功能">
+        <Button onPress={() => router.push('/vision' as never)} variant="secondary">照片比较实验</Button>
+      </Card>
       <Card title="用药与计划">
-        <Text style={[styles.body, { color: appearance.colors.text, fontSize: 15 * appearance.textScale }]}>已启用 {snapshot.medications.filter((item) => item.active).length} 项 · 已暂停 {snapshot.medications.filter((item) => !item.active).length} 项</Text>
+        <Text style={[styles.body, { color: appearance.colors.text, fontSize: 15 * appearance.textScale }]}>已启用 {snapshot.medications.filter((item) => item.planState === "active").length} 项 · 已暂停 {snapshot.medications.filter((item) => item.planState === "paused").length} 项 · 无时段 {snapshot.medications.filter((item) => item.planState === "no_schedule").length} 项</Text>
         <Button onPress={() => router.push("/(tabs)/medications")} variant="secondary">管理用药计划</Button>
       </Card>
 

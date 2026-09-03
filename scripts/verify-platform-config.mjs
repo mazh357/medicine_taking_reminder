@@ -28,8 +28,8 @@ expect(
   'Real patient data must remain blocked until Android security evidence is signed off.',
 );
 expect(
-  expoConfig?.extra?.storageSchemaVersion === 4,
-  'Personal storage schema must remain v4.',
+  expoConfig?.extra?.storageSchemaVersion === 6,
+  'Personal storage schema must be v6.',
 );
 const sqlitePlugin = expoConfig?.plugins?.find(
   (plugin) => Array.isArray(plugin) && plugin[0] === 'expo-sqlite',

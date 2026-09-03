@@ -10,7 +10,7 @@ vi.mock('expo-sqlite', () => ({
 }));
 vi.mock('../storage', () => ({
   adaptExpoSQLite: vi.fn(() => ({})),
-  initializePersonalDatabaseV4: vi.fn(),
+  initializePersonalDatabaseV6: vi.fn(),
 }));
 vi.mock('./databaseKeyStore', () => ({
   expoDatabaseKeyProvider: {
@@ -33,7 +33,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 // eslint-disable-next-line import/first
 import { openDatabaseAsync } from 'expo-sqlite';
 // eslint-disable-next-line import/first
-import { initializePersonalDatabaseV4 } from '../storage';
+import { initializePersonalDatabaseV6 } from '../storage';
 // eslint-disable-next-line import/first
 import { DatabaseAuthenticationError, DatabaseKeyUnavailableError } from './securityErrors';
 
@@ -65,8 +65,8 @@ function dependencies(overrides: Partial<SecureDatabaseDependencies> = {}) {
 }
 
 describe('openSecurePersonalDatabase safety boundary', () => {
-  it('binds the production encrypted runtime to schema v4 initialization', () => {
-    expect(expoSecureDatabaseDependencies.initialize).toBe(initializePersonalDatabaseV4);
+  it('binds the production encrypted runtime to schema v6 initialization', () => {
+    expect(expoSecureDatabaseDependencies.initialize).toBe(initializePersonalDatabaseV6);
   });
 
   it('opens an isolated connection without the native close-time statement sweep', async () => {

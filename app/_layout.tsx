@@ -6,6 +6,7 @@ import { ActivityIndicator, AppState, StyleSheet, Text, View } from "react-nativ
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 
 import { installDemoApi } from "../src/features/demoApi";
+import { installVisionLabApi } from "../src/features/visionLabApi";
 import { installMedicationAppCapabilities, medicationAppApi } from "../src/features/medicationAppApi";
 import { occurrenceEntryPath, resolveOccurrenceEntry } from "../src/features/occurrenceEntryPolicy";
 import { createDemoRuntime } from "../src/infrastructure/runtime";
@@ -42,9 +43,14 @@ export default function RootLayout() {
         let clearing = false;
         installMedicationAppCapabilities({
           createMedication: (input) => runtime.api.createPersonalMedication(input),
-          updatePlan: (id, input) => runtime.api.updatePlan(id, input),
-          pausePlan: (id) => runtime.api.pausePlan(id),
-          resumePlan: (id) => runtime.api.resumePlan(id),
+          addMedicationSchedule: (id, input) => runtime.api.addMedicationSchedule(id, input),
+          updateMedicationSchedule: (id, input) =>
+            runtime.api.updateMedicationSchedule(id, input),
+          pauseMedicationSchedule: (id) => runtime.api.pauseMedicationSchedule(id),
+          resumeMedicationSchedule: (id) => runtime.api.resumeMedicationSchedule(id),
+          deleteMedicationSchedule: (id) => runtime.api.deleteMedicationSchedule(id),
+          pauseMedication: (id) => runtime.api.pauseMedication(id),
+          resumeMedication: (id) => runtime.api.resumeMedication(id),
           correctInventory: (id, target, reason) => runtime.api.correctInventory(id, target, reason),
           savePreferences: (theme, size) => runtime.api.savePreferences(theme, size),
           getPreferences: () => runtime.api.getPreferences(),
@@ -71,6 +77,7 @@ export default function RootLayout() {
             // Revoke every UI capability before the first destructive step so
             // no mounted or delayed caller can continue using the old runtime.
             installMedicationAppCapabilities({});
+            installVisionLabApi(null);
             removeAppState?.();
             stopReconciler?.();
             if (mounted) setRuntimeState({ status: "starting" });
@@ -92,6 +99,7 @@ export default function RootLayout() {
           },
         });
         installDemoApi(runtime.api);
+        installVisionLabApi(runtime.vision);
         dispose = runtime.dispose;
         const reconciler = new ForegroundLifecycleReconciler({
           now: () => Date.now(),
@@ -118,6 +126,7 @@ export default function RootLayout() {
       });
     return () => {
       mounted = false;
+      installVisionLabApi(null);
       removeAppState?.();
       stopReconciler?.();
       void dispose?.();

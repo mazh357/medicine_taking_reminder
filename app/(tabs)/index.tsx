@@ -87,7 +87,7 @@ export default function TodayScreen() {
   };
 
   return (
-    <Screen title="今天">
+    <Screen featureIcon="today" title="今天">
       {nextFollowUp ? (
         <Card
           accessibilityLabel={`下一个事项，${nextFollowUp.title}，${followUpCountdownLabel(nextFollowUp.scheduledAt)}`}

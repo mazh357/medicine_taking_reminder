@@ -6,12 +6,12 @@
 
 当前版本用于验证提醒、拍照留存、物体轮廓计数、逐药确认、库存预测、复诊/取药/检查事项、历史记录和本地加密等功能。以下功能虽已实现，仍只属于个人本地测试版；它不是医疗产品，也不适用于真实患者研究。
 
-> **当前门禁：仍只能使用虚构数据。** 2026-08-29 生成的 x86_64 与 ARM64 内部 Release-like APK 已完成静态审计；x86_64 包已在 API 36 模拟器完成无 Metro 冷启动、拍照、重新拍照、加密保存和解密预览。32 个测试文件、162 项 Node 测试及 3 项 Android 原生仪器测试通过。当前没有连接真实 Android 手机，ARM64 包仍为“已构建，实机运行待验”；真实 v3 包升级、安全取证和人类签署也未完成，`realPatientDataAllowed=false`。
+> **当前门禁：仍只能使用虚构数据。** App `0.3.0` 已实现同一药物 1—8 个每日提醒时段和五个主功能图标。38 个测试文件、191 项 Node 测试及 10 项 Android 原生单元测试通过；x86_64 与 ARM64 Release-like APK 已于 2026-09-02 构建并完成静态审计。本轮 API 36 页面流程、v5→v6 设备升级和 ARM64 真机运行仍待验证；授权药片图片评测、安全取证和人类签署也未完成，`realPatientDataAllowed=false`。
 
 ## 1. 已实现的功能
 
 - 启动后直接进入“今天”，不显示重复的 Demo 声明或横幅；
-- 录入药物、计划数量、库存和每日提醒时间；
+- 录入药物、库存和 1—8 个每日提醒时段，每个时段独立设置时间、数量和启停状态；
 - 创建今日任务和本地提醒；
 - 手动拍照，或记录跳过拍照的原因；
 - 在纯色背景下进行端侧物体轮廓计数；
@@ -24,7 +24,9 @@
 - 查看全部历史照片，逐张预览、删除或清除本机数据；
 - 修改、暂停或恢复计划，校正库存；
 - 切换主题和文字大小，检查相机、通知、存储及加密状态；
+- 在底部导航和五个主页面标题显示“今日、用药、事项、记录、设置”功能图标；
 - 使用 SQLCipher 保存结构化数据，并以 Android Keystore + AES-GCM 逐文件加密照片。
+- 在设置中提供与服药链路隔离的“照片比较实验”：匿名样本、正反面版本基线、1—8 个对象计数、照片重拍/预览/删除及人工标注。外观模型未通过图片评测，当前保持 `count_only`；远程识图关闭。
 - 冷启动和回到前台时执行跨天任务与提醒对账；锁屏通知使用不含药名、剂量和事项标题的中性文案；
 - 用户确认清除后物理删除数据库、照片、缓存、密钥、偏好和本地通知，再自动重建空白安全运行时。
 
@@ -172,16 +174,16 @@ npm start
 当前推荐的模拟器验证包位于：
 
 ```text
-dist\android\long-term-medication-assistant-v0.1.0-x86_64-internal.apk
+dist\android\long-term-medication-assistant-v0.3.0-x86_64-internal.apk
 ```
 
 启动 `MedicationDemo_API_36` 后安装：
 
 ```powershell
-adb install -r .\dist\android\long-term-medication-assistant-v0.1.0-x86_64-internal.apk
+adb install -r .\dist\android\long-term-medication-assistant-v0.3.0-x86_64-internal.apk
 ```
 
-该包为 59,371,438 字节，SHA-256 为 `5DAD3D179FBD0328350B6FCC9CFE10057792A29E1A5DD7012BE9C2FDAE35896A`。它内嵌 JavaScript bundle，安装后不需要运行 Metro 或 `npm start`。
+该包为 76,484,010 字节，SHA-256 为 `85AE0B4F810566F568F68E37DD392196A7A23C85597604B4124B20D36D055DAD`。它内嵌 JavaScript bundle，安装后不需要运行 Metro 或 `npm start`。
 
 ### 安装 Development Build
 
@@ -207,7 +209,7 @@ npm start
 
 ### 在 ARM64 Android 手机上安装内部测试包
 
-内部实机包只适用于 `arm64-v8a` Android 手机，继续使用内部 Debug 证书，只允许虚构数据测试。它内嵌 JavaScript bundle，安装后不需要 Metro 或 `npm start`。当前包为 57,582,887 字节，SHA-256 为 `2A6747E3C120D8C71F0DDFFEC663AA3028B4BCACCA4C269238309A1DDC994F16`；截至 2026-08-29 尚未连接真实手机，运行状态为“实机待验”。
+内部实机包只适用于 `arm64-v8a` Android 手机，继续使用内部 Debug 证书，只允许虚构数据测试。它内嵌 JavaScript bundle，安装后不需要 Metro 或 `npm start`。当前包为 71,942,956 字节，SHA-256 为 `D7D6E288D02ADFBE23A03F4E3CCDE01C9F03182FC64D8811B28329E821139C4F`；截至 2026-09-02 尚未连接真实手机，运行状态为“已构建、静态审计通过，实机待验”。
 
 1. 在手机“设置 → 关于手机”中连续点击版本号，启用开发者选项；随后打开“USB 调试”。不同品牌的菜单名称可能略有差异。
 2. 使用可传输数据的 USB 线连接电脑，在手机上接受这台电脑的调试授权。
@@ -229,13 +231,13 @@ npm run build:android:release:arm64
 成功产物位于：
 
 ```text
-dist\android\long-term-medication-assistant-v0.1.0-arm64-v8a-internal.apk
+dist\android\long-term-medication-assistant-v0.3.0-arm64-v8a-internal.apk
 ```
 
 5. 安装或覆盖安装：
 
 ```powershell
-adb install -r .\dist\android\long-term-medication-assistant-v0.1.0-arm64-v8a-internal.apk
+adb install -r .\dist\android\long-term-medication-assistant-v0.3.0-arm64-v8a-internal.apk
 ```
 
 安装成功后，可直接点击手机中的“长期用药助手”。建议先打开飞行模式，依次检查冷启动、新增虚构药物、拍照保存、逐药确认、剩余库存和事项倒计时。
@@ -393,39 +395,25 @@ adb emu kill
 
 ## 9. 当前验证状态
 
-截至 2026-08-29，源代码与自动化检查已完成：
+截至 2026-09-02：
 
-- 个人本地模式和安全配置校验通过；
-- TypeScript 和 ESLint 检查通过；
-- 32 个测试文件、162 项 Node 自动化测试通过；
-- 3 项 Android 原生仪器测试通过，覆盖加密保存与解密预览、相同原图的随机 IV，以及密文篡改后的认证失败；
-- schema v4 已实现库存预测偏好、事项及其追加事件、辅助提醒意图和可重建投影；
-- 已实现库存余额/预计用尽与不足日、每药补药提醒、复诊/取药/检查事项、历史筛选、跨天对账、中性通知及物理全部清除后的空白重建；
-- “今天”页面在启动、回到前台、进入页面、时间边界和每 60 秒兜底检查时执行状态对账；任务卡片统一按提前记录、拍照、逐药确认或记录详情规则跳转；
-- 当天超时任务可补拍或补录，原晚服/漏服事件保留；完成记录已提供追加式“修改记录”和“重新拍照”，不会覆盖旧事实或重复扣减库存；
-- 加密数据库已升级到 schema v4；schema v3 的照片用途与追加证据契约继续保留。
+- App 版本为 `0.3.0`，Android `versionCode=3`，加密数据库 schema 为 v6；
+- 已支持同一药物 1—8 个每日提醒时段，每个时段独立设置时间、数量和状态，共享药物库存；
+- 时段支持新增、修改、暂停、恢复和退役，药物支持整体暂停与恢复；
+- 五个底部导航和五个主页面标题已增加对应功能图标；
+- 平台配置、TypeScript、ESLint、38 个测试文件和 191 项 Node 测试通过；
+- 10 项 Android 原生单元测试通过，0 失败、0 错误；
+- schema v5→v6 的迁移与领域测试通过，真实设备覆盖升级仍待验证。
 
-修复前 x86_64 Debug APK 为 100,078,230 字节，生成时间 2026-08-27 10:19:33 +08:00，SHA-256 `8E5D15283F80C53D8EB2ECCCD3FD77383B898AE612F631095F2A8C35C05E3074`。由于随后修改了 SQLite 代码，它仅作历史构建证据，不能作为当前候选、Release 或真机通过证据。
+当前构建产物：
 
-修复前 `:app:assembleRelease` 已成功；该 x86_64 内部 Release APK 为 59,360,014 字节，生成时间 2026-08-27 15:23:08 +08:00，SHA-256 `AAD669ECD417A371933E9ABC49BFF3395E5ABCF5C19F8C0C7D1A5B5BFE803C59`。已确认内嵌 JavaScript bundle、Manifest 未标为 debuggable，且 APK v2 签名校验通过；签名为内部 Android Debug 证书，不可用于公开发布。由于随后修改了 SQLite 代码，该哈希不再代表当前源码候选。
+- x86_64 模拟器内部 APK：`dist/android/long-term-medication-assistant-v0.3.0-x86_64-internal.apk`，76,484,010 字节，SHA-256 `85AE0B4F810566F568F68E37DD392196A7A23C85597604B4124B20D36D055DAD`；
+- ARM64 手机内部 APK：`dist/android/long-term-medication-assistant-v0.3.0-arm64-v8a-internal.apk`，71,942,956 字节，SHA-256 `D7D6E288D02ADFBE23A03F4E3CCDE01C9F03182FC64D8811B28329E821139C4F`；
+- Development Build：仅供连接 Metro 调试，不作为 Release-like 验收包。
 
-上述修复前 Release 权限和安装通过；清空模拟器应用沙箱后，Metro 未监听且飞行模式下可进入“今天”。直接覆盖旧测试数据后的首次冷启动曾在 `expo-sqlite` 的 `exsqlite3_finalize` 发生 SIGSEGV。SQLite 打开/关闭策略和认证探测已经修复，并已打入下述新 Release。
+两个 Release-like APK 都只包含对应单一 ABI，内嵌离线 JavaScript bundle，无 debuggable 标志、无 `INTERNET`、悬浮窗和外部存储权限，`allowBackup=false`、`usesCleartextTraffic=false`、Expo Updates 关闭，APK v2 签名通过。两者仍使用内部 Android Debug 证书，不是公开发布签名。
 
-2026-08-27 的 SQLite 修复后 x86_64 内部 Release APK 为 59,360,042 字节，SHA-256 `4646E91CE6377DC1A81887A70552EA2139F3C0A1C7935BEC38A95FF75685BD68`。该包用于 SQLite 回归取证；随后又修复了 Android Keystore 不允许调用方提供加密 IV 的照片保存问题，因此它不再是当前候选。
-
-API 36 验证结果：飞行模式且 Metro 未监听的干净冷启动通过；在修复前 Release 中创建 `UpgradeTest`、库存 `12` 后覆盖安装新包，首次/二次冷启动和前后台切换均无崩溃，数据与预测日期保留；注入同名明文 SQLite 后没有 SIGSEGV，数据库与 SecureStore 哈希不变，应用显示可恢复错误。恢复原加密库后合成数据仍可读取。2026-08-29 又完成了当前 x86_64 包的“重新拍照 → 加密保存 → 记录新增照片 → 解密预览”模拟器实测，未再出现“照片未能保存”。
-
-此前基线已证明 Android API 36 模拟器、SQLCipher 和 AES-GCM 原生编译链可工作；这些历史结果仅用于定位环境问题，不计入 2026-08-27 的 Release 或真机通过结论。
-
-当前 x86_64 与 ARM64 APK 均已确认：只包含对应单一 ABI，内嵌离线 JavaScript bundle，无 debuggable 标志、无 INTERNET/悬浮窗/外部存储权限，`allowBackup=false`、`usesCleartextTraffic=false`、Expo Updates 关闭，APK v2 签名通过。两者仍使用相同的内部 Android Debug 证书，不可用于公开发布。
-
-尚未完成：ARM64 真实手机运行、真机磁盘密文、Keystore 异常、备份恢复、照片物理删除和锁屏通知证据及人类专业签署，因此 `realPatientDataAllowed=false`，真实数据门禁仍保持关闭。
-
-当前构建产物状态：
-
-- x86_64 模拟器内部 APK（本机文件：`dist/android/long-term-medication-assistant-v0.1.0-x86_64-internal.apk`）：59,371,438 字节，SHA-256 `5DAD3D179FBD0328350B6FCC9CFE10057792A29E1A5DD7012BE9C2FDAE35896A`；API 36 拍照、加密保存与解密预览已验；
-- ARM64 实机内部 APK（本机文件：`dist/android/long-term-medication-assistant-v0.1.0-arm64-v8a-internal.apk`）：57,582,887 字节，SHA-256 `2A6747E3C120D8C71F0DDFFEC663AA3028B4BCACCA4C269238309A1DDC994F16`；已构建并完成静态审计，实机运行待验；
-- Development Build：只有执行调试构建后才会生成 `android/app/build/outputs/apk/debug/app-debug.apk`；它仅用于连接 Metro 的开发调试，不作为当前 Release-like 验收包。
+本轮未能在 Codex 子进程中启动 ADB，因此 API 36 的多时段页面流程、图标无障碍、v5→v6 设备升级及 ARM64 真机运行仍待验。详细结果见[一日多次提醒与功能图标验收记录](quality/一日多次提醒与功能图标验收记录_2026-09-02.md)。在这些证据和人类专业签署完成前，`realPatientDataAllowed=false`。
 
 ## 10. 项目文档
 
@@ -438,6 +426,7 @@ API 36 验证结果：飞行模式且 Metro 未监听的干净冷启动通过；
 - [个人本地测试版功能完善与交互修改说明](governance/个人本地测试版功能完善与交互修改说明_v0.1.md)
 - [2026-08-27 功能验收记录](quality/个人本地测试版功能验收记录_2026-08-27.md)
 - [Release 构建失败原因与修复方案](quality/Release构建失败原因与修复方案_2026-08-27.md)
+- [v0.3.0 一日多次提醒与功能图标验收记录](quality/一日多次提醒与功能图标验收记录_2026-09-02.md)
 
 ## 11. 安全边界
 

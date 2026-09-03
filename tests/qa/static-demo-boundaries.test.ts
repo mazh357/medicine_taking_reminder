@@ -88,7 +88,7 @@ describe('QA: route and offline safety boundaries', () => {
       personalLocalMode: true,
       encryptionRequired: true,
       realPatientDataAllowed: false,
-      storageSchemaVersion: 4,
+      storageSchemaVersion: 6,
       mediaFormatVersion: 1,
     });
   });

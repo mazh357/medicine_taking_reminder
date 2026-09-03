@@ -33,7 +33,10 @@ import type {
   FollowUpItemView,
   InventoryPrediction,
   LocalDataSummary,
+  MedicationActivationResult,
   MedicationInput,
+  MedicationScheduleInput,
+  MedicationScheduleView,
   PhotoView,
   PlanChangeResult,
   RefillReminderDays,
@@ -150,68 +153,123 @@ export class ApplicationMedicationAppAdapter implements DemoApi {
   async createMedication(input: NewMedicationInput): Promise<string> {
     return this.createPersonalMedication({
       name: input.name,
-      plannedDoseQuantity: input.plannedDoseQuantity,
       initialInventory: input.initialInventory,
-      reminderTime: input.reminderTime,
+      schedules: [{
+        reminderTime: input.reminderTime,
+        plannedDoseQuantity: input.plannedDoseQuantity,
+      }],
     });
   }
 
   async createPersonalMedication(input: MedicationInput): Promise<string> {
     let id = '';
     await this.mutate(async () => {
-      const medication = this.unwrap(
-        await this.dependencies.application.createMedication({
+      const now = this.dependencies.now();
+      const today = this.localDate(now);
+      const created = this.unwrap(
+        await this.dependencies.application.createMedicationWithSchedules({
           ...this.command(),
           displayName: input.name,
           initialInventoryQuantity: String(input.initialInventory),
+          schedules: input.schedules.map((schedule) => ({
+            name: input.name,
+            localTime: schedule.reminderTime,
+            timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            onTimeOffsetMinutes: 60,
+            recordOffsetMinutes: 720,
+            captureMode: 'group' as const,
+            plannedDoseQuantity: String(schedule.plannedDoseQuantity),
+            startLocalDate: this.scheduleStartDate(schedule.reminderTime, now),
+          })),
         }),
       );
-      id = medication.id;
-      const today = this.dependencies.now();
-      this.unwrap(
-        await this.dependencies.application.createRegimen({
-          ...this.command(),
-          name: input.name,
-          localTime: input.reminderTime,
-          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          onTimeOffsetMinutes: 60,
-          recordOffsetMinutes: 720,
-          captureMode: 'group',
-          startLocalDate: this.localDate(today),
-          items: [{ medicationId: medication.id, plannedDoseQuantity: String(input.plannedDoseQuantity) }],
-        }),
-      );
+      id = created.medication.id;
       this.unwrap(
         await this.dependencies.application.materializeDate({
           ...this.command(),
-          localDate: this.localDate(today),
+          localDate: today,
         }),
       );
       this.unwrap(
         await this.dependencies.application.reconcileOccurrenceTimes({
           ...this.command(),
-          localDate: this.localDate(today),
-          currentAtUtc: today.toISOString(),
+          localDate: today,
+          currentAtUtc: now.toISOString(),
         }),
       );
-      await this.reconcileReminders(this.localDate(today));
+      await this.reconcileReminders(today);
     });
     return id;
   }
 
   async updateMedication(medicationId: string, input: NewMedicationInput): Promise<void> {
-    await this.updatePlan(medicationId, {
-      name: input.name,
-      plannedDoseQuantity: input.plannedDoseQuantity,
-      initialInventory: input.initialInventory,
+    const [schedule] = await this.schedulesForMedication(medicationId);
+    if (!schedule) throw new PersonalAppIntegrationError('未找到对应的用药计划。');
+    await this.updateMedicationSchedule(schedule.regimen.id, {
       reminderTime: input.reminderTime,
+      plannedDoseQuantity: input.plannedDoseQuantity,
     });
+    await this.correctInventory(
+      medicationId,
+      input.initialInventory,
+      'plan_edit_inventory',
+    );
   }
 
-  async updatePlan(medicationId: string, input: MedicationInput): Promise<PlanChangeResult> {
+  async addMedicationSchedule(
+    medicationId: string,
+    input: MedicationScheduleInput,
+  ): Promise<string> {
+    let id = '';
+    await this.mutate(async () => {
+      const medication = await this.dependencies.unitOfWork.run((repository) =>
+        repository.getMedication(medicationId),
+      );
+      if (!medication) throw new PersonalAppIntegrationError('未找到对应的药物。');
+      const now = this.dependencies.now();
+      const regimen = this.unwrap(
+        await this.dependencies.application.createRegimen({
+          ...this.command(),
+          name: medication.displayName,
+          localTime: input.reminderTime,
+          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          onTimeOffsetMinutes: 60,
+          recordOffsetMinutes: 720,
+          captureMode: 'group',
+          startLocalDate: this.scheduleStartDate(input.reminderTime, now),
+          items: [{
+            medicationId,
+            plannedDoseQuantity: String(input.plannedDoseQuantity),
+          }],
+        }),
+      );
+      id = regimen.id;
+      const today = this.localDate(now);
+      this.unwrap(
+        await this.dependencies.application.materializeDate({
+          ...this.command(),
+          localDate: today,
+        }),
+      );
+      this.unwrap(
+        await this.dependencies.application.reconcileOccurrenceTimes({
+          ...this.command(),
+          localDate: today,
+          currentAtUtc: now.toISOString(),
+        }),
+      );
+      await this.reconcileReminders(today);
+    });
+    return id;
+  }
+
+  async updateMedicationSchedule(
+    scheduleId: string,
+    input: MedicationScheduleInput,
+  ): Promise<PlanChangeResult> {
     let result!: PlanChangeResult;
     await this.mutate(async () => {
-      const { regimen } = await this.planForMedication(medicationId);
+      const { regimen, version, medicationId } = await this.scheduleById(scheduleId);
       const now = this.dependencies.now();
       result = this.unwrap(
         await this.dependencies.application.updateRegimenPlan({
@@ -221,22 +279,40 @@ export class ApplicationMedicationAppAdapter implements DemoApi {
           currentLocalDate: this.localDate(now),
           currentAtUtc: now.toISOString(),
           changes: {
-            name: input.name,
             localTime: input.reminderTime,
             itemChanges: [{
               medicationId,
-              displayName: input.name,
               plannedDoseQuantity: String(input.plannedDoseQuantity),
             }],
           },
         }),
       );
-      this.unwrap(
-        await this.dependencies.application.correctInventory({
+      void version;
+      await this.reconcileReminders(this.localDate(now));
+    });
+    return result;
+  }
+
+  async pauseMedicationSchedule(scheduleId: string): Promise<PlanChangeResult> {
+    return this.setScheduleActive(scheduleId, false);
+  }
+
+  async resumeMedicationSchedule(scheduleId: string): Promise<PlanChangeResult> {
+    return this.setScheduleActive(scheduleId, true);
+  }
+
+  async deleteMedicationSchedule(scheduleId: string): Promise<PlanChangeResult> {
+    let result!: PlanChangeResult;
+    await this.mutate(async () => {
+      const { regimen } = await this.scheduleById(scheduleId);
+      const now = this.dependencies.now();
+      result = this.unwrap(
+        await this.dependencies.application.retireRegimen({
           ...this.command(),
-          medicationId,
-          targetInventoryQuantity: String(input.initialInventory),
-          reasonCode: 'plan_edit_inventory',
+          regimenId: regimen.id,
+          expectedRowVersion: regimen.rowVersion,
+          currentLocalDate: this.localDate(now),
+          currentAtUtc: now.toISOString(),
         }),
       );
       await this.reconcileReminders(this.localDate(now));
@@ -244,12 +320,12 @@ export class ApplicationMedicationAppAdapter implements DemoApi {
     return result;
   }
 
-  async pausePlan(medicationId: string): Promise<PlanChangeResult> {
-    return this.setPlanActive(medicationId, false);
+  async pauseMedication(medicationId: string): Promise<MedicationActivationResult> {
+    return this.setMedicationActive(medicationId, false);
   }
 
-  async resumePlan(medicationId: string): Promise<PlanChangeResult> {
-    return this.setPlanActive(medicationId, true);
+  async resumeMedication(medicationId: string): Promise<MedicationActivationResult> {
+    return this.setMedicationActive(medicationId, true);
   }
 
   async correctInventory(medicationId: string, targetInventory: number, reason: string): Promise<void> {
@@ -667,10 +743,10 @@ export class ApplicationMedicationAppAdapter implements DemoApi {
     });
   }
 
-  private async setPlanActive(medicationId: string, active: boolean): Promise<PlanChangeResult> {
+  private async setScheduleActive(scheduleId: string, active: boolean): Promise<PlanChangeResult> {
     let result!: PlanChangeResult;
     await this.mutate(async () => {
-      const { regimen } = await this.planForMedication(medicationId);
+      const { regimen } = await this.scheduleById(scheduleId);
       const now = this.dependencies.now();
       const command = {
         ...this.command(),
@@ -689,21 +765,114 @@ export class ApplicationMedicationAppAdapter implements DemoApi {
     return result;
   }
 
-  private async planForMedication(medicationId: string): Promise<{
+  private async setMedicationActive(
+    medicationId: string,
+    active: boolean,
+  ): Promise<MedicationActivationResult> {
+    let result!: MedicationActivationResult;
+    await this.mutate(async () => {
+      const medication = await this.dependencies.unitOfWork.run((repository) =>
+        repository.getMedication(medicationId),
+      );
+      if (!medication) throw new PersonalAppIntegrationError('未找到对应的药物。');
+      const now = this.dependencies.now();
+      const domainResult = this.unwrap(
+        active
+          ? await this.dependencies.application.resumeMedication({
+              ...this.command(),
+              medicationId,
+              expectedRowVersion: medication.rowVersion,
+              currentLocalDate: this.localDate(now),
+              currentAtUtc: now.toISOString(),
+            })
+          : await this.dependencies.application.pauseMedication({
+              ...this.command(),
+              medicationId,
+              expectedRowVersion: medication.rowVersion,
+              currentLocalDate: this.localDate(now),
+              currentAtUtc: now.toISOString(),
+            }),
+      );
+      result = {
+        effectiveLocalDate: domainResult.effectiveLocalDate,
+        effective: domainResult.effective,
+        affectedScheduleIds: domainResult.affectedRegimenIds,
+        replacedOccurrenceIds: domainResult.replacedOccurrenceIds,
+        newOccurrenceIds: domainResult.newOccurrenceIds,
+        notificationRebuildRequired: domainResult.notificationRebuildRequired,
+      };
+      await this.reconcileReminders(this.localDate(now));
+    });
+    return result;
+  }
+
+  private async schedulesForMedication(medicationId: string): Promise<{
     regimen: PersonalRegimen;
     version: RegimenVersion;
+    medicationId: string;
+  }[]> {
+    const localDate = this.localDate(this.dependencies.now());
+    return this.dependencies.unitOfWork.run(async (repository) => {
+      const regimens = await repository.listRegimensForMedication(medicationId);
+      const schedules: {
+        regimen: PersonalRegimen;
+        version: RegimenVersion;
+        medicationId: string;
+      }[] = [];
+      for (const regimen of regimens) {
+        if (
+          regimen.retirementEffectiveLocalDate != null &&
+          regimen.retirementEffectiveLocalDate <= localDate
+        ) continue;
+        const version = await repository.getRegimenVersion(regimen.currentVersionId);
+        if (version?.items.some((item) => item.medicationId === medicationId)) {
+          schedules.push({ regimen, version, medicationId });
+        }
+      }
+      return schedules.sort((left, right) =>
+        left.version.localTime.localeCompare(right.version.localTime) ||
+        left.regimen.id.localeCompare(right.regimen.id),
+      );
+    });
+  }
+
+  private async scheduleById(scheduleId: string): Promise<{
+    regimen: PersonalRegimen;
+    version: RegimenVersion;
+    medicationId: string;
   }> {
     const localDate = this.localDate(this.dependencies.now());
     return this.dependencies.unitOfWork.run(async (repository) => {
-      const regimens = await repository.listRegimensForDate(localDate);
-      for (const regimen of regimens) {
-        const version = await repository.getRegimenVersion(regimen.currentVersionId);
-        if (version?.items.some((item) => item.medicationId === medicationId)) {
-          return { regimen, version };
-        }
+      const regimen = await repository.getRegimen(scheduleId);
+      if (
+        !regimen ||
+        (regimen.retirementEffectiveLocalDate != null &&
+          regimen.retirementEffectiveLocalDate <= localDate)
+      ) {
+        throw new PersonalAppIntegrationError('未找到对应的用药时段。');
       }
-      throw new PersonalAppIntegrationError('未找到对应的用药计划。');
+      const version = await repository.getRegimenVersion(regimen.currentVersionId);
+      const medicationId = version?.items[0]?.medicationId;
+      if (!version || !medicationId) {
+        throw new PersonalAppIntegrationError('用药时段数据不完整。');
+      }
+      return { regimen, version, medicationId };
     });
+  }
+
+  private scheduleStartDate(reminderTime: string, now: Date): string {
+    const [hourText, minuteText] = reminderTime.split(':');
+    const hour = Number(hourText);
+    const minute = Number(minuteText);
+    const today = this.localDate(now);
+    if (
+      Number.isInteger(hour) &&
+      Number.isInteger(minute) &&
+      (hour > now.getHours() || (hour === now.getHours() && minute > now.getMinutes()))
+    ) {
+      return today;
+    }
+    return this.addLocalDays(today, 1);
   }
 
   private async recordCount(
@@ -973,7 +1142,17 @@ export class ApplicationMedicationAppAdapter implements DemoApi {
       const medications = await repository.listMedications();
       const occurrences = await repository.listAllOccurrences();
       const ledger = await repository.listAllInventoryLedger();
-      const regimens = await repository.listRegimensForDate(localDate);
+      const regimens = [
+        ...new Map(
+          (await Promise.all(
+            medications.map((medication) =>
+              repository.listRegimensForMedication(medication.id),
+            ),
+          ))
+            .flat()
+            .map((regimen) => [regimen.id, regimen] as const),
+        ).values(),
+      ];
       const versions = await Promise.all(
         regimens.map((regimen) => repository.getRegimenVersion(regimen.currentVersionId)),
       );
@@ -981,7 +1160,15 @@ export class ApplicationMedicationAppAdapter implements DemoApi {
         occurrences.map((occurrence) => repository.getHistory(occurrence.id)),
       );
       const followUps = await repository.listAllFollowUpItems();
-      return { medications, occurrences, ledger, regimens, versions, histories, followUps };
+      return {
+        medications,
+        occurrences,
+        ledger,
+        regimens,
+        versions,
+        histories,
+        followUps,
+      };
     });
     const forecasts = await Promise.all(
       data.medications.map(async (medication) =>
@@ -1002,23 +1189,50 @@ export class ApplicationMedicationAppAdapter implements DemoApi {
             (total, entry) => total + signedQuantityToMilliunits(entry.quantityDelta),
             0n,
           );
-        const planIndex = data.versions.findIndex((version) =>
-          version?.items.some((item) => item.medicationId === medication.id),
-        );
-        const version = planIndex >= 0 ? data.versions[planIndex] : null;
-        const regimen = planIndex >= 0 ? data.regimens[planIndex] : null;
-        const item = version?.items.find((candidate) => candidate.medicationId === medication.id);
+        const schedules: MedicationScheduleView[] = data.regimens
+          .flatMap((regimen, planIndex) => {
+            if (
+              regimen.retirementEffectiveLocalDate &&
+              regimen.retirementEffectiveLocalDate <= localDate
+            ) {
+              return [];
+            }
+            const version = data.versions[planIndex];
+            const item = version?.items.find(
+              (candidate) => candidate.medicationId === medication.id,
+            );
+            if (!version || !item) return [];
+            return [{
+              id: regimen.id,
+              reminderTime: version.localTime,
+              plannedDoseQuantity: Number(item.plannedDoseQuantity),
+              status: this.regimenIsActiveOnDate(regimen, localDate)
+                ? 'active' as const
+                : 'paused' as const,
+              onTimeOffsetMinutes: version.onTimeOffsetMinutes,
+              recordOffsetMinutes: version.recordOffsetMinutes,
+            }];
+          })
+          .sort((left, right) =>
+            left.reminderTime.localeCompare(right.reminderTime) || left.id.localeCompare(right.id),
+          );
+        const firstSchedule = schedules[0];
         const forecast = forecasts[medicationIndex]!;
+        const planState = schedules.length === 0
+          ? 'no_schedule'
+          : !this.medicationIsActiveOnDate(medication, localDate)
+            ? 'paused'
+            : 'active';
         return {
           id: medication.id,
           name: medication.displayName,
           unit: '片' as const,
-          plannedDoseQuantity: Number(item?.plannedDoseQuantity ?? 0),
+          plannedDoseQuantity: firstSchedule?.plannedDoseQuantity ?? 0,
           inventoryBalance: Number(balanceMilliunits) / 1000,
-          reminderTime: version?.localTime ?? '08:00',
-          active: regimen?.status === 'active',
-          onTimeOffsetMinutes: version?.onTimeOffsetMinutes ?? 60,
-          recordOffsetMinutes: version?.recordOffsetMinutes ?? 720,
+          reminderTime: firstSchedule?.reminderTime ?? '08:00',
+          active: planState === 'active',
+          planState,
+          schedules,
           refillReminderDays: (forecast.leadDays ?? 0) as RefillReminderDays,
           inventoryPrediction: this.mapInventoryPrediction(forecast),
         };
@@ -1060,6 +1274,23 @@ export class ApplicationMedicationAppAdapter implements DemoApi {
           : null,
       nextInsufficientLocalDate,
     };
+  }
+
+  private regimenIsActiveOnDate(regimen: PersonalRegimen, localDate: string): boolean {
+    if (!regimen.statusEffectiveLocalDate) return regimen.status === 'active';
+    return regimen.status === 'active'
+      ? regimen.statusEffectiveLocalDate <= localDate
+      : regimen.statusEffectiveLocalDate > localDate;
+  }
+
+  private medicationIsActiveOnDate(
+    medication: { status: 'active' | 'inactive'; statusEffectiveLocalDate?: string | null },
+    localDate: string,
+  ): boolean {
+    if (!medication.statusEffectiveLocalDate) return medication.status === 'active';
+    return medication.status === 'active'
+      ? medication.statusEffectiveLocalDate <= localDate
+      : medication.statusEffectiveLocalDate > localDate;
   }
 
   private mapFollowUp(item: FollowUpItem): FollowUpItemView {

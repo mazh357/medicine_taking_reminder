@@ -26,6 +26,7 @@ import type {
   FollowUpItemEvent,
   InventoryForecastPreference,
   MedicationDailyPlan,
+  RegimenRetirementFact,
 } from '../domain';
 import type { Clock, IdGenerator, PayloadFingerprinter, ScheduleResolver } from './ports';
 
@@ -43,6 +44,13 @@ export interface MedicationRepository {
     displayName: string,
     updatedAtUtc: UtcInstant,
   ): Promise<void>;
+  setMedicationStatus(input: {
+    medicationId: EntityId;
+    status: PersonalMedication['status'];
+    effectiveLocalDate: LocalDate;
+    expectedRowVersion: number;
+    updatedAtUtc: UtcInstant;
+  }): Promise<void>;
   getInventoryForecastPreference(medicationId: EntityId): Promise<InventoryForecastPreference | null>;
   listInventoryForecastPreferences(): Promise<InventoryForecastPreference[]>;
   insertInventoryForecastPreference(preference: InventoryForecastPreference): Promise<void>;
@@ -59,6 +67,7 @@ export interface MedicationRepository {
   getRegimenVersion(id: EntityId): Promise<RegimenVersion | null>;
   getEffectiveRegimenVersion(regimenId: EntityId, localDate: LocalDate): Promise<RegimenVersion | null>;
   listRegimensForDate(localDate: LocalDate): Promise<PersonalRegimen[]>;
+  listRegimensForMedication(medicationId: EntityId): Promise<PersonalRegimen[]>;
   insertRegimen(regimen: PersonalRegimen, version: RegimenVersion): Promise<void>;
   appendRegimenVersion(
     regimen: PersonalRegimen,
@@ -73,6 +82,11 @@ export interface MedicationRepository {
     updatedAtUtc: UtcInstant;
   }): Promise<void>;
   appendRegimenRevision(event: RegimenRevisionEvent): Promise<void>;
+  retireRegimen(
+    fact: RegimenRetirementFact,
+    expectedRowVersion: number,
+    updatedAtUtc: UtcInstant,
+  ): Promise<void>;
 
   getOccurrence(id: EntityId): Promise<PersonalDoseOccurrence | null>;
   getOccurrenceByItemId(occurrenceItemId: EntityId): Promise<PersonalDoseOccurrence | null>;

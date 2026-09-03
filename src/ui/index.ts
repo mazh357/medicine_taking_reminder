@@ -3,6 +3,7 @@ export * from "./Card";
 export * from "./Choice";
 export * from "./FormField";
 export * from "./FunnelButton";
+export * from "./feature-icon";
 export * from "./Screen";
 export * from "./StatusPill";
 export * from "./TimePickerField";

@@ -22,6 +22,7 @@ import {
   type PersonalPhotoEvidence,
   type PersonalProcessedCommand,
   type PersonalRegimen,
+  type RegimenRetirementFact,
   type RegimenRevisionEvent,
   type RegimenVersion,
   type RegimenVersionItem,
@@ -114,12 +115,14 @@ export class SqliteMedicationRepository implements MedicationRepository {
   async insertMedication(medication: PersonalMedication): Promise<void> {
     await this.database.runAsync(
       `INSERT INTO medications(
-         id,display_name,quantity_unit,status,created_at_utc,updated_at_utc,row_version
-       ) VALUES(?,?,?,?,?,?,?)`,
+         id,display_name,quantity_unit,status,status_effective_local_date,
+         created_at_utc,updated_at_utc,row_version
+       ) VALUES(?,?,?,?,?,?,?,?)`,
       medication.id,
       medication.displayName,
       medication.quantityUnit,
       medication.status,
+      medication.statusEffectiveLocalDate ?? null,
       medication.createdAtUtc,
       medication.updatedAtUtc,
       medication.rowVersion,
@@ -138,6 +141,26 @@ export class SqliteMedicationRepository implements MedicationRepository {
       medicationId,
     );
     if (result.changes !== 1) throw new DomainRuleError('NOT_FOUND', 'error.medication_not_found');
+  }
+
+  async setMedicationStatus(input: {
+    medicationId: string;
+    status: PersonalMedication['status'];
+    effectiveLocalDate: string;
+    expectedRowVersion: number;
+    updatedAtUtc: string;
+  }): Promise<void> {
+    const result = await this.database.runAsync(
+      `UPDATE medications
+       SET status=?,status_effective_local_date=?,updated_at_utc=?,row_version=row_version+1
+       WHERE id=? AND row_version=?`,
+      input.status,
+      input.effectiveLocalDate,
+      input.updatedAtUtc,
+      input.medicationId,
+      input.expectedRowVersion,
+    );
+    if (result.changes !== 1) this.versionConflict();
   }
 
   async getInventoryForecastPreference(
@@ -197,14 +220,23 @@ export class SqliteMedicationRepository implements MedicationRepository {
        FROM regimens r
        JOIN regimen_versions v ON v.regimen_id=r.id
        JOIN regimen_version_items i ON i.regimen_version_id=v.id
+       JOIN medications m ON m.id=i.medication_id
        WHERE i.medication_id=? AND (
          (r.status='active' AND r.status_effective_local_date<=?)
          OR (r.status='paused' AND r.status_effective_local_date>?)
        )
+         AND (r.retirement_effective_local_date IS NULL OR r.retirement_effective_local_date>?)
+         AND (
+           (m.status='active' AND (m.status_effective_local_date IS NULL OR m.status_effective_local_date<=?))
+           OR (m.status='inactive' AND m.status_effective_local_date>?)
+         )
          AND v.superseded_at_utc IS NULL AND v.effective_local_date<=?
          AND (v.effective_to_local_date IS NULL OR v.effective_to_local_date>=?)
        ORDER BY v.local_time,r.id`,
       medicationId,
+      localDate,
+      localDate,
+      localDate,
       localDate,
       localDate,
       localDate,
@@ -257,7 +289,9 @@ export class SqliteMedicationRepository implements MedicationRepository {
        ) AND (
          (r.status='active' AND r.status_effective_local_date<=?)
          OR (r.status='paused' AND r.status_effective_local_date>?)
-       ) ORDER BY r.created_at_utc,r.id`,
+       ) AND (r.retirement_effective_local_date IS NULL OR r.retirement_effective_local_date>?)
+       ORDER BY r.created_at_utc,r.id`,
+      localDate,
       localDate,
       localDate,
       localDate,
@@ -265,11 +299,24 @@ export class SqliteMedicationRepository implements MedicationRepository {
     return rows.map((row) => this.mapRegimen(row));
   }
 
+  async listRegimensForMedication(medicationId: string): Promise<PersonalRegimen[]> {
+    const rows = await this.database.getAllAsync<Row>(
+      `SELECT DISTINCT r.* FROM regimens r
+       JOIN regimen_versions v ON v.regimen_id=r.id
+       JOIN regimen_version_items i ON i.regimen_version_id=v.id
+       WHERE i.medication_id=?
+       ORDER BY r.created_at_utc,r.id`,
+      medicationId,
+    );
+    return rows.map((row) => this.mapRegimen(row));
+  }
+
   async insertRegimen(regimen: PersonalRegimen, version: RegimenVersion): Promise<void> {
     await this.database.runAsync(
       `INSERT INTO regimens(
-         id,status,status_effective_local_date,current_version_id,row_version,created_at_utc,updated_at_utc
-       ) VALUES(?,?,?,?,?,?,?)`,
+         id,status,status_effective_local_date,current_version_id,row_version,created_at_utc,
+         updated_at_utc,retirement_effective_local_date
+       ) VALUES(?,?,?,?,?,?,?,?)`,
       regimen.id,
       regimen.status,
       regimen.statusEffectiveLocalDate,
@@ -277,6 +324,7 @@ export class SqliteMedicationRepository implements MedicationRepository {
       regimen.rowVersion,
       regimen.createdAtUtc,
       regimen.updatedAtUtc,
+      regimen.retirementEffectiveLocalDate ?? null,
     );
     await this.insertRegimenVersion(version);
   }
@@ -335,6 +383,32 @@ export class SqliteMedicationRepository implements MedicationRepository {
       event.recordedAtUtc,
       event.commandId,
     );
+  }
+
+  async retireRegimen(
+    fact: RegimenRetirementFact,
+    expectedRowVersion: number,
+    updatedAtUtc: string,
+  ): Promise<void> {
+    await this.database.runAsync(
+      `INSERT INTO regimen_retirement_facts(
+         command_id,regimen_id,effective_local_date,recorded_at_utc
+       ) VALUES(?,?,?,?)`,
+      fact.commandId,
+      fact.regimenId,
+      fact.effectiveLocalDate,
+      fact.recordedAtUtc,
+    );
+    const result = await this.database.runAsync(
+      `UPDATE regimens
+       SET retirement_effective_local_date=?,updated_at_utc=?,row_version=row_version+1
+       WHERE id=? AND row_version=? AND retirement_effective_local_date IS NULL`,
+      fact.effectiveLocalDate,
+      updatedAtUtc,
+      fact.regimenId,
+      expectedRowVersion,
+    );
+    if (result.changes !== 1) this.versionConflict();
   }
 
   async getOccurrence(id: string): Promise<PersonalDoseOccurrence | null> {
@@ -1299,6 +1373,10 @@ export class SqliteMedicationRepository implements MedicationRepository {
       displayName: String(row.display_name),
       quantityUnit: 'count',
       status: String(row.status) as PersonalMedication['status'],
+      statusEffectiveLocalDate:
+        row.status_effective_local_date == null
+          ? null
+          : String(row.status_effective_local_date),
       createdAtUtc: String(row.created_at_utc),
       updatedAtUtc: String(row.updated_at_utc),
       rowVersion: Number(row.row_version),
@@ -1390,6 +1468,10 @@ export class SqliteMedicationRepository implements MedicationRepository {
       rowVersion: Number(row.row_version),
       createdAtUtc: String(row.created_at_utc),
       updatedAtUtc: String(row.updated_at_utc),
+      retirementEffectiveLocalDate:
+        row.retirement_effective_local_date == null
+          ? null
+          : String(row.retirement_effective_local_date),
     };
   }
 

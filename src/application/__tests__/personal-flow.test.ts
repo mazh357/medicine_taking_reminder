@@ -111,6 +111,7 @@ function occurrence(overrides: Partial<PersonalDoseOccurrence> = {}): PersonalDo
 function baseRepository(overrides: Partial<MedicationRepository>): MedicationRepository {
   const processed = new Map<string, { payloadFingerprint: string; resultJson: string }>();
   return {
+    listRegimensForMedication: vi.fn(async () => []),
     getProcessedCommand: vi.fn(async (type, key) => {
       const value = processed.get(`${type}:${key}`);
       return value
@@ -344,6 +345,36 @@ describe('personal application contracts', () => {
     });
     expect(resumed).toMatchObject({ ok: true, value: { effective: 'today' } });
     expect(insertOccurrence).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not cancel a stale scheduled task after its reminder time has passed', async () => {
+    const staleOccurrence = occurrence({ currentLifecycle: 'scheduled' });
+    const replaceOccurrence = vi.fn(async () => undefined);
+    const repository = baseRepository({
+      getRegimen: vi.fn(async () => REGIMEN),
+      getRegimenVersion: vi.fn(async () => VERSION),
+      getEffectiveRegimenVersion: vi.fn(async () => VERSION),
+      findActiveOccurrence: vi.fn(async () => staleOccurrence),
+      listActiveOccurrencesForRegimenFromDate: vi.fn(async () => [staleOccurrence]),
+      setRegimenStatus: vi.fn(async () => undefined),
+      replaceOccurrence,
+      cancelReminderIntent: vi.fn(async () => undefined),
+      appendRegimenRevision: vi.fn(async () => undefined),
+    });
+
+    const result = await createApplication(repository).pauseRegimen({
+      ...command(51),
+      regimenId: REGIMEN.id,
+      expectedRowVersion: 1,
+      currentLocalDate: '2026-08-25',
+      currentAtUtc: '2026-08-25T09:00:00.000Z',
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: { effective: 'tomorrow', effectiveLocalDate: '2026-08-26' },
+    });
+    expect(replaceOccurrence).not.toHaveBeenCalled();
   });
 
   it('corrects inventory by an append-only difference and does not duplicate a retry', async () => {
@@ -970,6 +1001,66 @@ describe('personal application contracts', () => {
       },
     });
     expect(listCountObservations).not.toHaveBeenCalled();
+  });
+
+  it('sums every active daily schedule when forecasting shared medication inventory', async () => {
+    const repository = baseRepository({
+      getMedication: vi.fn(async () => MEDICATION),
+      getInventoryForecastPreference: vi.fn(async (): Promise<InventoryForecastPreference> => ({
+        medicationId: MEDICATION.id,
+        leadDays: 7,
+        updatedAtUtc: NOW,
+        rowVersion: 1,
+      })),
+      listInventoryLedger: vi.fn(async (): Promise<PersonalInventoryLedgerEntry[]> => [
+        {
+          id: 'stock-multiple-times',
+          medicationId: MEDICATION.id,
+          entryType: 'initial',
+          quantityDelta: '7' as PersonalInventoryLedgerEntry['quantityDelta'],
+          quantityUnit: 'count',
+          sourceFactType: 'medication',
+          sourceFactId: MEDICATION.id,
+          reversesEntryId: null,
+          reasonCode: null,
+          effectiveAtUtc: NOW,
+          recordedAtUtc: NOW,
+          commandId: 'seed-multiple-times',
+        },
+      ]),
+      listActiveDailyPlansForMedication: vi.fn(async () =>
+        [
+          ['regimen-morning', 'version-morning', '1', '08:00'],
+          ['regimen-noon', 'version-noon', '0.5', '13:00'],
+          ['regimen-evening', 'version-evening', '2', '20:00'],
+        ].map(([regimenId, regimenVersionId, quantity, localTime]) => ({
+          regimenId: regimenId!,
+          regimenVersionId: regimenVersionId!,
+          medicationId: MEDICATION.id,
+          plannedDoseQuantity: normalizeQuantity(quantity!),
+          localTime: localTime!,
+          timeZone: 'UTC',
+          effectiveLocalDate: '2026-08-25',
+        })),
+      ),
+    });
+
+    const result = await createApplication(repository).getInventoryForecast(
+      MEDICATION.id,
+      '2026-08-25',
+      '2026-08-25T07:00:00.000Z',
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        balanceQuantity: '7',
+        dailyDoseQuantity: '3.5',
+        fullDoses: 2,
+        nextPlannedLocalDate: '2026-08-25',
+        estimatedShortageLocalDate: '2026-08-27',
+      },
+    });
   });
 
   it('does not forecast a paused plan while a disabled reminder still keeps its prediction', async () => {

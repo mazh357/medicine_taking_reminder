@@ -32,6 +32,7 @@ export default function HistoryScreen() {
 
   return (
     <Screen
+      featureIcon="history"
       headerRight={
         <FunnelButton
           active={filtersActive}

@@ -37,7 +37,7 @@ export default function FollowUpsScreen() {
   };
 
   return (
-    <Screen title="事项" subtitle="记录复诊、取药和检查安排，提醒仅保存在本机。">
+    <Screen featureIcon="followups" title="事项" subtitle="记录复诊、取药和检查安排，提醒仅保存在本机。">
       <Button onPress={() => router.push("/follow-up/new" as never)}>新增事项</Button>
       {error ? <Text accessibilityRole="alert" style={[styles.error, { color: appearance.colors.danger }]}>{error}</Text> : null}
       {items.length === 0 ? (

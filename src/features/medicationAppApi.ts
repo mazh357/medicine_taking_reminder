@@ -1,12 +1,19 @@
 import type { DemoApi, DemoNotificationState, DemoPhotoEvidence, DemoSnapshot, DoseLifecycle, ItemConsumptionAssertion } from "./demoApi";
 import { getActiveDemoApiForUi } from "./demoApi";
 
-export type MedicationInput = {
-  name: string;
-  plannedDoseQuantity: number;
-  initialInventory: number;
+export type MedicationScheduleInput = {
   reminderTime: string;
+  plannedDoseQuantity: number;
 };
+
+export type CreateMedicationInput = {
+  name: string;
+  initialInventory: number;
+  schedules: MedicationScheduleInput[];
+};
+
+/** @deprecated Use CreateMedicationInput. Kept as a source-compatible type alias. */
+export type MedicationInput = CreateMedicationInput;
 
 export type ThemeMode = "system" | "light" | "dark";
 export type TextSize = "standard" | "large" | "extra_large";
@@ -17,6 +24,15 @@ export type PlanChangeResult = {
   replacedOccurrenceId?: string;
   newOccurrenceId?: string;
   notificationRebuildRequired?: boolean;
+};
+
+export type MedicationActivationResult = {
+  effectiveLocalDate: string;
+  effective: "today" | "tomorrow";
+  affectedScheduleIds: string[];
+  replacedOccurrenceIds: string[];
+  newOccurrenceIds: string[];
+  notificationRebuildRequired: boolean;
 };
 
 export type LocalDataSummary = {
@@ -89,16 +105,22 @@ export type PhotoView = DemoPhotoEvidence & {
   deletionStatus?: "active" | "pending" | "deleted" | "failed";
 };
 
+export type MedicationScheduleView = {
+  id: string;
+  reminderTime: string;
+  plannedDoseQuantity: number;
+  status: "active" | "paused";
+  onTimeOffsetMinutes: number;
+  recordOffsetMinutes: number;
+};
+
 export type MedicationView = {
   id: string;
   name: string;
   quantityUnit: "count";
-  plannedDoseQuantity: number;
   inventoryBalance: number;
-  reminderTime: string;
-  active: boolean;
-  onTimeOffsetMinutes: number;
-  recordOffsetMinutes: number;
+  planState: "active" | "paused" | "no_schedule";
+  schedules: MedicationScheduleView[];
   refillReminderDays: RefillReminderDays;
   inventoryPrediction: InventoryPrediction;
 };
@@ -151,10 +173,20 @@ export type MedicationAppSnapshot = {
 };
 
 type ExtendedCapabilities = {
-  createMedication(input: MedicationInput): Promise<string>;
-  updatePlan(medicationId: string, input: MedicationInput): Promise<PlanChangeResult>;
-  pausePlan(medicationId: string): Promise<PlanChangeResult>;
-  resumePlan(medicationId: string): Promise<PlanChangeResult>;
+  createMedication(input: CreateMedicationInput): Promise<string>;
+  addMedicationSchedule(
+    medicationId: string,
+    input: MedicationScheduleInput,
+  ): Promise<string>;
+  updateMedicationSchedule(
+    scheduleId: string,
+    input: MedicationScheduleInput,
+  ): Promise<PlanChangeResult>;
+  pauseMedicationSchedule(scheduleId: string): Promise<PlanChangeResult>;
+  resumeMedicationSchedule(scheduleId: string): Promise<PlanChangeResult>;
+  deleteMedicationSchedule(scheduleId: string): Promise<PlanChangeResult>;
+  pauseMedication(medicationId: string): Promise<MedicationActivationResult>;
+  resumeMedication(medicationId: string): Promise<MedicationActivationResult>;
   correctInventory(
     medicationId: string,
     targetInventory: number,
@@ -273,21 +305,25 @@ function viewSnapshot(): MedicationAppSnapshot {
   previousViewSnapshot = {
     medications: raw.medications.map((medication) => {
       const extended = medication as typeof medication & {
-        onTimeOffsetMinutes?: number;
-        recordOffsetMinutes?: number;
         refillReminderDays?: RefillReminderDays;
         inventoryPrediction?: InventoryPrediction;
+        planState?: MedicationView["planState"];
+        schedules?: MedicationScheduleView[];
       };
       return {
       id: medication.id,
       name: medication.name,
       quantityUnit: "count",
-      plannedDoseQuantity: medication.plannedDoseQuantity,
       inventoryBalance: medication.inventoryBalance,
-      reminderTime: medication.reminderTime,
-      active: medication.active,
-      onTimeOffsetMinutes: extended.onTimeOffsetMinutes ?? 60,
-      recordOffsetMinutes: extended.recordOffsetMinutes ?? 720,
+      planState: extended.planState ?? (medication.active ? "active" : "paused"),
+      schedules: extended.schedules ?? [{
+          id: `legacy-schedule-${medication.id}`,
+          reminderTime: medication.reminderTime,
+          plannedDoseQuantity: medication.plannedDoseQuantity,
+          status: medication.active ? "active" : "paused",
+          onTimeOffsetMinutes: 60,
+          recordOffsetMinutes: 720,
+        }],
       refillReminderDays: extended.refillReminderDays ?? 7,
       inventoryPrediction: extended.inventoryPrediction ?? {
         status: "unavailable",
@@ -306,11 +342,19 @@ export const medicationAppApi = {
   getSnapshot: (): MedicationAppSnapshot => viewSnapshot(),
   subscribe: (listener: () => void) => active().subscribe(listener),
   getNotificationState: (): DemoNotificationState => active().getNotificationState(),
-  createMedication: (input: MedicationInput) => capability("createMedication")(input),
-  updatePlan: (medicationId: string, input: MedicationInput) =>
-    capability("updatePlan")(medicationId, input),
-  pausePlan: (medicationId: string) => capability("pausePlan")(medicationId),
-  resumePlan: (medicationId: string) => capability("resumePlan")(medicationId),
+  createMedication: (input: CreateMedicationInput) => capability("createMedication")(input),
+  addMedicationSchedule: (medicationId: string, input: MedicationScheduleInput) =>
+    capability("addMedicationSchedule")(medicationId, input),
+  updateMedicationSchedule: (scheduleId: string, input: MedicationScheduleInput) =>
+    capability("updateMedicationSchedule")(scheduleId, input),
+  pauseMedicationSchedule: (scheduleId: string) =>
+    capability("pauseMedicationSchedule")(scheduleId),
+  resumeMedicationSchedule: (scheduleId: string) =>
+    capability("resumeMedicationSchedule")(scheduleId),
+  deleteMedicationSchedule: (scheduleId: string) =>
+    capability("deleteMedicationSchedule")(scheduleId),
+  pauseMedication: (medicationId: string) => capability("pauseMedication")(medicationId),
+  resumeMedication: (medicationId: string) => capability("resumeMedication")(medicationId),
   correctInventory: (medicationId: string, target: number, reason: string) =>
     capability("correctInventory")(medicationId, target, reason),
   savePreferences: (themeMode: ThemeMode, textSize: TextSize) =>
